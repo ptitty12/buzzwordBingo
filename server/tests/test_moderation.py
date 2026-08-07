@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app import moderation
 from app.moderation import CATEGORIES, Verdict, _verdict_from, prescreen
 
-from .conftest import create_game, join
+from .conftest import build_card, create_game, join
 
 
 class TestPrescreen:
@@ -231,6 +231,26 @@ class TestSuggestEndpoint:
 
     def test_suggesting_requires_joining_a_game(self, client: TestClient):
         assert client.post("/api/words/suggest", json={"text": "synergy"}).status_code == 401
+
+    def test_proposals_close_once_the_card_is_locked_in(
+        self, client: TestClient, admin_headers: dict, monkeypatch
+    ):
+        """Proposing is part of drafting; committing to a card ends it."""
+        game, player = self._player(client, admin_headers)
+        called: list[str] = []
+        monkeypatch.setattr(
+            "app.routers.words.judge",
+            lambda text, pool: called.append(text)
+            or Verdict(decision="approved", reason="Sure.", judged_by="claude-opus-5"),
+        )
+
+        build_card(client, game["id"], player)
+        response = client.post(
+            "/api/words/suggest", json={"text": "blamestorming"}, headers=player["headers"]
+        )
+        assert response.status_code == 409
+        assert "locked in" in response.json()["detail"]
+        assert called == [], "the model must not be billed for a request we already refuse"
 
     def test_player_can_see_their_own_history(
         self, client: TestClient, admin_headers: dict, monkeypatch

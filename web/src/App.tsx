@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 
 import { activateAdmin, activateNone, api } from './lib/api'
 import { useAsync, useRoute } from './lib/hooks'
-import { useSession } from './lib/store'
+import { useSession, useToast } from './lib/store'
 import { Avatar, ErrorNote, Spinner, ToastStack } from './components/ui'
 import { Admin } from './views/Admin'
 import { AdminGate } from './views/AdminGate'
@@ -13,10 +13,26 @@ import { Join } from './views/Join'
 import { Landing } from './views/Landing'
 
 export default function App() {
-  const { isAdmin, player, ready, signOutAdmin } = useSession()
+  const { isAdmin, player, ready, expired, clearExpiry, signOutAdmin } = useSession()
+  const { push } = useToast()
   const [segments, navigate] = useRoute()
 
   const [section, param] = segments
+
+  // A rejected token has already been binned by the API client. Say so plainly —
+  // silently reverting to the nickname screen looks like the app lost its mind.
+  useEffect(() => {
+    if (!expired) return
+    push({
+      kind: 'info',
+      title: expired === 'admin' ? 'Administrator session ended' : 'Session expired',
+      body:
+        expired === 'admin'
+          ? 'Enter the console PIN again to continue.'
+          : 'The server restarted or your seat was cleared. Rejoin with your nickname.',
+    })
+    clearExpiry()
+  }, [expired, push, clearExpiry])
 
   // Tint the whole UI with the current player's accent (admins stay on the default).
   useEffect(() => {

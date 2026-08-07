@@ -464,6 +464,27 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .cell.pick:hover { border-color: var(--border-strong); background: var(--surface-2); color: var(--text); }
 .cell.empty { border-style: dashed; color: var(--text-faint); background: transparent; }
 
+/* Arranging squares in the drafting preview. */
+.cell.draggable { cursor: grab; }
+.cell.draggable:active { cursor: grabbing; }
+.cell.draggable:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.cell.dragging { opacity: .35; }
+.cell.drop-target,
+.cell.picked {
+  border-color: var(--green);
+  background: rgba(63, 207, 142, .14);
+  box-shadow: 0 0 0 1px rgba(63, 207, 142, .35) inset;
+}
+/* The tap-to-swap source keeps a visible hold, since the finger has already left it. */
+.cell.picked { animation: picked-hold 1.4s ease-in-out infinite; }
+@keyframes picked-hold {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(63, 207, 142, .35) inset; }
+  50%      { box-shadow: 0 0 0 2px rgba(63, 207, 142, .6) inset; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cell.picked { animation: none; }
+}
+
 /* Type scales with the square itself, so a 25-square admin thumbnail and a full-size
    play card are both legible without a separate "compact" variant.
    These target `.cell span`, not `.cell`: an element cannot query the container it
@@ -971,6 +992,67 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: rgba(251, 191, 36, .08);
 }
 .verdict-wait .verdict-icon { color: var(--warning); }
+
+/* The wait while the model decides. Everything here is indeterminate on purpose —
+   we genuinely do not know how long the call takes, so nothing pretends to. */
+.verdict-judging {
+  border-color: rgba(63, 207, 142, .3);
+  background:
+    linear-gradient(90deg, rgba(63, 207, 142, .1), rgba(45, 212, 191, .06) 60%, transparent);
+}
+.judging-spark {
+  color: var(--green);
+  animation: judging-pulse 1.5s ease-in-out infinite;
+}
+@keyframes judging-pulse {
+  0%, 100% { opacity: .45; transform: scale(.9) rotate(0deg); }
+  50%      { opacity: 1;   transform: scale(1.15) rotate(90deg); }
+}
+
+.judging-dots { display: inline-flex; gap: 3px; margin-left: 6px; vertical-align: middle; }
+.judging-dots i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: judging-blink 1.2s ease-in-out infinite;
+}
+.judging-dots i:nth-child(2) { animation-delay: .18s; }
+.judging-dots i:nth-child(3) { animation-delay: .36s; }
+@keyframes judging-blink {
+  0%, 80%, 100% { opacity: .2; transform: translateY(0); }
+  40%           { opacity: 1;  transform: translateY(-2px); }
+}
+
+.judging-bar {
+  margin-top: 9px;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, .07);
+  overflow: hidden;
+}
+.judging-bar i {
+  display: block;
+  height: 100%;
+  width: 38%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--green), var(--teal), transparent);
+  animation: judging-sweep 1.25s cubic-bezier(.5, 0, .5, 1) infinite;
+}
+@keyframes judging-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+/* Respect a reduced-motion preference: keep the state visible, drop the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .judging-spark,
+  .judging-dots i,
+  .judging-bar i { animation: none; }
+  .judging-spark { opacity: 1; }
+  .judging-dots i { opacity: .8; }
+  .judging-bar i { width: 100%; }
+}
 
 .suggestion-row {
   padding: 7px 10px;

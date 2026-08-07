@@ -1,6 +1,10 @@
 """End-to-end API tests covering the full game lifecycle."""
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
+
+from app.config import _resolve_secret_key
 
 from .conftest import ADMIN_PIN, build_card, create_game, join
 
@@ -258,15 +262,33 @@ class TestCardBuilding:
         placed = {c["word_id"] for c in card["cells"] if c["word_id"]}
         assert set(chosen).issubset(placed)
 
-    def test_rebuilding_replaces_the_previous_card(self, client: TestClient, admin_headers: dict):
+    def test_locking_in_a_card_is_final(self, client: TestClient, admin_headers: dict):
+        """A second build is refused: redrafting after hearing the meeting is cheating."""
         game = create_game(client, admin_headers)
         player = join(client, game["id"], "Darryl")
-        first = build_card(client, game["id"], player)
-        second = build_card(client, game["id"], player)
-        assert first["id"] != second["id"]
+        build_card(client, game["id"], player)
+
+        response = client.post(
+            f"/api/games/{game['id']}/card", json={"word_ids": []}, headers=player["headers"]
+        )
+        assert response.status_code == 409
+        assert "already locked in" in response.json()["detail"]
 
         cards = client.get(f"/api/games/{game['id']}/cards", headers=admin_headers).json()
         assert len(cards) == 1, "a player must never end up with two cards in one game"
+
+    def test_chosen_words_keep_the_order_they_were_arranged_in(
+        self, client: TestClient, admin_headers: dict
+    ):
+        """The drafting preview lets players arrange squares, so order must survive."""
+        game = create_game(client, admin_headers)
+        player = join(client, game["id"], "Meredith")
+        pool = client.get("/api/words", headers=player["headers"]).json()
+        chosen = [word["id"] for word in pool[:12]]
+
+        card = build_card(client, game["id"], player, chosen)
+        playable = [cell["word_id"] for cell in card["cells"] if not cell["is_free"]]
+        assert playable[: len(chosen)] == chosen
 
     def test_cards_lock_once_the_game_is_live(self, client: TestClient, admin_headers: dict):
         game = create_game(client, admin_headers)
@@ -481,3 +503,30 @@ class TestAdminConsole:
         client.post("/api/words", json={"text": "auditable moment"}, headers=admin_headers)
         entries = client.get("/api/admin/audit", headers=admin_headers).json()
         assert "word.created" in [e["action"] for e in entries]
+
+
+class TestSigningKeyPersistence:
+    """A restart must not sign everybody out.
+
+    The generated SECRET_KEY used to live only in memory, so every restart — including
+    the autoreload that fires when you edit .env — invalidated every token in every
+    browser. Players mid-draft got "Join a game to continue." with no explanation.
+    """
+
+    def test_generated_key_is_reused_across_processes(self, tmp_path: Path):
+        database = str(tmp_path / "bingo.db")
+        first = _resolve_secret_key(database)
+        second = _resolve_secret_key(database)
+
+        assert first == second, "a restart must not invalidate every issued token"
+        assert (tmp_path / ".secret_key").read_text(encoding="utf-8") == first
+
+    def test_separate_databases_get_separate_keys(self, tmp_path: Path):
+        a = _resolve_secret_key(str(tmp_path / "a" / "bingo.db"))
+        b = _resolve_secret_key(str(tmp_path / "b" / "bingo.db"))
+        assert a != b
+
+    def test_in_memory_database_stays_ephemeral(self, tmp_path: Path):
+        """Tests and throwaway instances have nowhere to persist, and want no file."""
+        assert _resolve_secret_key(":memory:") != _resolve_secret_key(":memory:")
+        assert not (tmp_path / ".secret_key").exists()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 from functools import lru_cache
 from pathlib import Path
@@ -29,8 +30,9 @@ class Settings(BaseSettings):
     #: SQLite database location. Use ":memory:" for ephemeral test runs.
     database_url: str = str(SERVER_ROOT / "data" / "bingo.db")
 
-    #: Signing secret for session tokens. Generated per-process if unset, which means
-    #: sessions do not survive a restart — set this explicitly in any real deployment.
+    #: Signing secret for session tokens. When unset, a key is generated once and
+    #: persisted next to the database (see `_resolve_secret_key`) so restarts do not
+    #: silently sign every player out. Set it explicitly in any real deployment.
     secret_key: str = ""
 
     #: Browser origins allowed to call the API.
@@ -82,11 +84,47 @@ class Settings(BaseSettings):
         return self.environment.lower() in {"production", "prod"}
 
 
+def _resolve_secret_key(database_url: str) -> str:
+    """Return a signing key that survives a restart, generating one on first boot.
+
+    A per-process key looks harmless until you restart: every token ever issued stops
+    verifying at once, and players who are mid-draft get "Join a game to continue." with
+    no idea why. In development that fires on something as innocuous as editing .env,
+    because autoreload restarts the process. So the generated key is written next to the
+    database and reused, which makes a restart invisible to everyone holding a session.
+
+    An explicit SECRET_KEY always wins; this only covers the unset case.
+    """
+    if database_url == ":memory:":
+        return secrets.token_urlsafe(32)  # nothing to persist alongside
+
+    path = Path(database_url).expanduser().resolve().parent / ".secret_key"
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except OSError:
+        pass  # missing or unreadable — fall through and mint one
+
+    key = secrets.token_urlsafe(32)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(key, encoding="utf-8")
+        path.chmod(0o600)
+    except OSError:
+        # Read-only filesystem: degrade to an ephemeral key rather than refusing to
+        # boot. Deployments in that shape should be setting SECRET_KEY anyway.
+        logging.getLogger("bingo").warning(
+            "Could not persist a generated SECRET_KEY at %s — sessions will not "
+            "survive a restart. Set SECRET_KEY explicitly.",
+            path,
+        )
+    return key
+
+
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
     if not settings.secret_key:
-        # Ephemeral fallback keeps local development frictionless; production
-        # deployments must supply SECRET_KEY so tokens survive restarts.
-        settings.secret_key = secrets.token_urlsafe(32)
+        settings.secret_key = _resolve_secret_key(settings.database_url)
     return settings

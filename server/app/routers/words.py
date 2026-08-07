@@ -86,6 +86,17 @@ def suggest_word(
     player = identity.player
     player_name = identity.display_name
 
+    # Proposing is part of drafting. Once a card is locked in, a new word could only ever
+    # land on someone else's card, so the door closes with the card.
+    if player is not None and query_one(
+        "SELECT id FROM cards WHERE game_id = ? AND player_id = ?",
+        (player["game_id"], player["id"]),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Your card is locked in — word proposals close once you commit to a card.",
+        )
+
     # Per-player quota, so one enthusiast cannot flood the pool (or the API bill).
     if player is not None:
         used = query_one(

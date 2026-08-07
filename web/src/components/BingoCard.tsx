@@ -27,14 +27,40 @@ export function BingoGrid({
   onCellClick,
   interactive = false,
   compact = false,
+  onSwap,
 }: {
   card: Card
   onCellClick?: (cell: CardCell) => void
   interactive?: boolean
   compact?: boolean
+  /**
+   * Enables arrange mode: squares can be dragged onto one another to swap places.
+   * Receives the two board positions to exchange.
+   */
+  onSwap?: (from: number, to: number) => void
 }) {
   const size = card.card_size
   const winning = new Set(card.lines.flatMap((pattern) => patternPositions(pattern, size)))
+
+  // Arrange mode has two ways in, because HTML5 drag-and-drop does not fire on touch:
+  // drag a square onto another, or tap one then tap its destination.
+  const [dragFrom, setDragFrom] = useState<number | null>(null)
+  const [over, setOver] = useState<number | null>(null)
+  const [picked, setPicked] = useState<number | null>(null)
+
+  const swappable = (cell: CardCell) => Boolean(onSwap) && !cell.is_free && cell.text !== ''
+
+  const commit = (from: number, to: number) => {
+    if (from !== to) onSwap?.(from, to)
+    setDragFrom(null)
+    setOver(null)
+    setPicked(null)
+  }
+
+  const tap = (cell: CardCell) => {
+    if (picked === null) setPicked(cell.position)
+    else commit(picked, cell.position)
+  }
 
   // Track which squares flipped since the last render so they can pop once.
   const previous = useRef<Set<string>>(new Set(card.cells.filter((c) => c.marked).map((c) => c.id)))
@@ -59,12 +85,19 @@ export function BingoGrid({
       aria-label={`${card.nickname}'s bingo card`}
     >
       {card.cells.map((cell) => {
+        const canSwap = swappable(cell)
         const classes = ['cell']
         if (cell.is_free) classes.push('free')
         if (cell.marked) classes.push('marked')
         if (winning.has(cell.position)) classes.push('winning')
         if (recent.has(cell.id)) classes.push('just-marked')
         if (interactive) classes.push('pick')
+        if (canSwap) classes.push('draggable')
+        if (dragFrom === cell.position) classes.push('dragging')
+        if (picked === cell.position) classes.push('picked')
+        if (over === cell.position && dragFrom !== null && dragFrom !== cell.position) {
+          classes.push('drop-target')
+        }
 
         return (
           <div
@@ -72,8 +105,35 @@ export function BingoGrid({
             className={classes.join(' ')}
             role="gridcell"
             aria-selected={cell.marked}
-            title={cell.category ? `${cell.text} — ${cell.category}` : cell.text}
-            onClick={interactive && onCellClick ? () => onCellClick(cell) : undefined}
+            title={
+              canSwap
+                ? `${cell.text} — drag to rearrange`
+                : cell.category
+                  ? `${cell.text} — ${cell.category}`
+                  : cell.text
+            }
+            onClick={
+              canSwap ? () => tap(cell) : interactive && onCellClick ? () => onCellClick(cell) : undefined
+            }
+            draggable={canSwap}
+            onDragStart={canSwap ? () => setDragFrom(cell.position) : undefined}
+            onDragEnd={canSwap ? () => { setDragFrom(null); setOver(null) } : undefined}
+            onDragOver={
+              canSwap
+                ? (event) => {
+                    event.preventDefault()
+                    setOver(cell.position)
+                  }
+                : undefined
+            }
+            onDrop={
+              canSwap
+                ? (event) => {
+                    event.preventDefault()
+                    if (dragFrom !== null) commit(dragFrom, cell.position)
+                  }
+                : undefined
+            }
             data-accent={card.accent}
           >
             <span>{cell.text}</span>

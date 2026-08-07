@@ -7,7 +7,7 @@
  * pending result explains that a human will look at it.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { api } from '../lib/api'
 import { useAsync } from '../lib/hooks'
@@ -37,6 +37,7 @@ function SuggestWordModal({
   const { push } = useToast()
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
+  const [judging, setJudging] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<SuggestionResponse | null>(null)
 
@@ -44,11 +45,13 @@ function SuggestWordModal({
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
+    const submitted = text.trim()
     setError(null)
     setResult(null)
+    setJudging(submitted)
     setBusy(true)
     try {
-      const response = await api.suggestWord(text.trim())
+      const response = await api.suggestWord(submitted)
       setResult(response)
       setText('')
       history.reload()
@@ -69,6 +72,7 @@ function SuggestWordModal({
       setError(err instanceof Error ? err.message : 'Could not submit that.')
     } finally {
       setBusy(false)
+      setJudging('')
     }
   }
 
@@ -93,7 +97,7 @@ function SuggestWordModal({
           placeholder="e.g. cross-pollination"
           maxLength={48}
           autoFocus
-          disabled={remaining <= 0 && Boolean(history.data)}
+          disabled={busy || (remaining <= 0 && Boolean(history.data))}
         />
         <button
           className="btn btn-primary"
@@ -112,8 +116,9 @@ function SuggestWordModal({
         </div>
       )}
 
+      {busy && <Judging text={judging} />}
       {error && <ErrorNote message={error} />}
-      {result && <Verdict result={result} />}
+      {!busy && result && <Verdict result={result} />}
 
       {history.data && history.data.suggestions.length > 0 && (
         <div>
@@ -136,6 +141,47 @@ function SuggestWordModal({
         </div>
       )}
     </Modal>
+  )
+}
+
+/**
+ * The judge is a live model call, so the wait is real — a second or three, occasionally
+ * more. A frozen button reads as a broken app, so the wait gets its own panel: the word
+ * under consideration, a scanning bar, and a line of commentary that keeps moving.
+ */
+const JUDGING_STEPS = [
+  'Reading the submission…',
+  'Checking it against the pool…',
+  'Weighing jargon against plain English…',
+  'Deciding whether it earns a square…',
+]
+
+function Judging({ text }: { text: string }) {
+  const [step, setStep] = useState(0)
+
+  useEffect(() => {
+    // Advance but never wrap: rolling back to step 1 would suggest it started over.
+    const timer = setInterval(
+      () => setStep((current) => Math.min(current + 1, JUDGING_STEPS.length - 1)),
+      1400,
+    )
+    return () => clearInterval(timer)
+  }, [])
+
+  return (
+    <div className="verdict verdict-judging" role="status" aria-live="polite">
+      <div className="row gap-8">
+        <span className="verdict-icon judging-spark" aria-hidden="true">✦</span>
+        <div className="grow" style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 640 }} className="truncate">
+            Judging “{text}”
+            <span className="judging-dots" aria-hidden="true"><i /><i /><i /></span>
+          </div>
+          <div className="dim" style={{ fontSize: 12.5, marginTop: 2 }}>{JUDGING_STEPS[step]}</div>
+          <div className="judging-bar" aria-hidden="true"><i /></div>
+        </div>
+      </div>
+    </div>
   )
 }
 

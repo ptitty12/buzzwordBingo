@@ -45,7 +45,6 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
   const [board, setBoard] = useState<LeaderboardEntry[]>([])
   const [viewers, setViewers] = useState(0)
   const [celebration, setCelebration] = useState<{ label: string; who: string } | null>(null)
-  const [rebuilding, setRebuilding] = useState(false)
 
   const gameData = game.data
   // Admins browse every game but play in none of them.
@@ -60,7 +59,6 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
     let cancelled = false
     setCard(null)
     setCardMissing(false)
-    setRebuilding(false)
 
     if (!spectating) {
       api
@@ -194,7 +192,8 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
     )
   }
 
-  const showBuilder = cardMissing || rebuilding
+  // Drafting is a one-way door: the builder shows only until a card exists.
+  const showBuilder = cardMissing
 
   return (
     <div className="page">
@@ -222,12 +221,9 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
           gameId={gameId}
           cardSize={gameData.card_size}
           freeSpace={gameData.free_space}
-          existing={rebuilding ? card : null}
-          onCancel={rebuilding ? () => setRebuilding(false) : undefined}
           onBuilt={(built) => {
             setCard(built)
             setCardMissing(false)
-            setRebuilding(false)
             push({ kind: 'success', title: 'Card locked in', body: 'Now wait for the buzzwords to fly.' })
           }}
         />
@@ -247,14 +243,9 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
               }
               subtitle={`${card.marked_count} of ${card.cells.length} squares marked`}
               actions={
-                <>
-                  <SuggestWordButton />
-                  {!card.locked && (
-                    <button className="btn btn-sm" onClick={() => setRebuilding(true)}>
-                      Rebuild
-                    </button>
-                  )}
-                </>
+                /* No rebuild and no proposals once you have committed: both would let a
+                   player reshape their odds after hearing which words are landing. */
+                <span className="badge badge-live">locked in</span>
               }
             >
               <BingoGrid card={card} />
@@ -408,23 +399,17 @@ function CardBuilder({
   gameId,
   cardSize,
   freeSpace,
-  existing,
   onBuilt,
-  onCancel,
 }: {
   gameId: string
   cardSize: number
   freeSpace: boolean
-  existing: Card | null
   onBuilt: (card: Card) => void
-  onCancel?: () => void
 }) {
   const { push } = useToast()
   const capacity = cardSize * cardSize - (freeSpace ? 1 : 0)
 
-  const [selected, setSelected] = useState<string[]>(
-    () => existing?.cells.filter((cell) => cell.word_id).map((cell) => cell.word_id as string) ?? [],
-  )
+  const [selected, setSelected] = useState<string[]>([])
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('All')
   const [busy, setBusy] = useState(false)
@@ -457,6 +442,33 @@ function CardBuilder({
     })
   }
 
+  /**
+   * Board positions skip over the free centre square; the selection array does not.
+   * This converts one to the other so a drop on a square knows which pick it moved.
+   */
+  const freeIndex = freeSpace ? Math.floor((cardSize * cardSize) / 2) : -1
+  const slotOf = (position: number) =>
+    freeIndex >= 0 && position > freeIndex ? position - 1 : position
+
+  const swapSquares = (from: number, to: number) => {
+    const a = slotOf(from)
+    const b = slotOf(to)
+    setSelected((current) => {
+      // Dragging onto a square that will be auto-filled moves the pick to the end of
+      // the queue instead of swapping with a word that does not exist yet.
+      if (a >= current.length && b >= current.length) return current
+      const next = [...current]
+      if (b >= next.length) {
+        const [moved] = next.splice(a, 1)
+        next.push(moved)
+        return next
+      }
+      if (a >= next.length) return next
+      ;[next[a], next[b]] = [next[b], next[a]]
+      return next
+    })
+  }
+
   const randomFill = () => {
     const pool = (words.data ?? []).map((word) => word.id).filter((id) => !selected.includes(id))
     for (let i = pool.length - 1; i > 0; i -= 1) {
@@ -478,10 +490,10 @@ function CardBuilder({
     }
   }
 
-  // Live preview: chosen words in order, free space carved out of the centre.
+  // Live preview: chosen words in the order you arranged them, free space carved out of
+  // the centre. The server no longer reshuffles, so this is exactly the card you get.
   const preview: Card = useMemo(() => {
     const byId = new Map((words.data ?? []).map((word) => [word.id, word]))
-    const freeIndex = freeSpace ? Math.floor((cardSize * cardSize) / 2) : -1
     const cells = []
     let cursor = 0
     for (let position = 0; position < cardSize * cardSize; position += 1) {
@@ -509,7 +521,7 @@ function CardBuilder({
       id: 'preview', game_id: gameId, player_id: '', nickname: 'Preview', avatar: '', accent: 'green',
       card_size: cardSize, locked: false, created_at: '', cells, marked_count: 0, lines: [], best_rank: null,
     }
-  }, [selected, words.data, cardSize, freeSpace, gameId])
+  }, [selected, words.data, cardSize, freeIndex, gameId])
 
   const remaining = capacity - selected.length
 
@@ -596,23 +608,25 @@ function CardBuilder({
               : `${capacity}/${capacity} — card is full`
           }
         >
-          <BingoGrid card={preview} compact />
+          <BingoGrid card={preview} compact onSwap={swapSquares} />
+          {selected.length > 1 && (
+            <p className="faint" style={{ fontSize: 11.5, marginTop: 10 }}>
+              ⠿ Drag a square onto another to swap them — or tap one, then tap where it
+              should go. This layout is the card you get.
+            </p>
+          )}
           <div className="meter" style={{ marginTop: 14 }}>
             <i style={{ width: `${Math.min(100, (selected.length / capacity) * 100)}%` }} />
           </div>
           <div className="row gap-8" style={{ marginTop: 14 }}>
             <button className="btn btn-primary grow" onClick={submit} disabled={busy}>
-              {busy ? 'Building…' : existing ? 'Rebuild card' : 'Lock in card'}
+              {busy ? 'Locking in…' : 'Lock in card'}
             </button>
-            {onCancel && (
-              <button className="btn btn-ghost" onClick={onCancel} disabled={busy}>
-                Cancel
-              </button>
-            )}
           </div>
           <p className="faint" style={{ fontSize: 11.5, marginTop: 10 }}>
-            Squares mark themselves when the word is spoken — inflections count too, so
-            “synergies” marks <em>synergy</em> and “leveraged” marks <em>leverage</em>.
+            Locking in is final — you cannot redraft afterwards. Squares mark themselves
+            when the word is spoken, and inflections count, so “synergies” marks{' '}
+            <em>synergy</em> and “leveraged” marks <em>leverage</em>.
           </p>
         </Panel>
       </div>

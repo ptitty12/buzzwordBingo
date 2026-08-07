@@ -26,7 +26,7 @@ import {
   copyToClipboard,
   relativeTime,
 } from '../components/ui'
-import type { ApiKey, Word } from '../lib/types'
+import type { ApiKey, Game, Word } from '../lib/types'
 
 type Tab =
   | 'overview'
@@ -606,6 +606,7 @@ function BulkImport({ onClose, onDone }: { onClose: () => void; onDone: () => vo
 function Games({ navigate }: { navigate: (path: string) => void }) {
   const { push } = useToast()
   const games = useAsync(() => api.games(), [])
+  const [creating, setCreating] = useState(false)
 
   const act = async (label: string, action: () => Promise<unknown>) => {
     try {
@@ -621,7 +622,30 @@ function Games({ navigate }: { navigate: (path: string) => void }) {
   if (games.error) return <ErrorNote message={games.error} />
 
   return (
-    <Panel title={`${games.data?.length ?? 0} games`} flush>
+    <>
+      {creating && (
+        <NewGameModal
+          onClose={() => setCreating(false)}
+          onCreated={(game) => {
+            setCreating(false)
+            games.reload()
+            push({
+              kind: 'success',
+              title: `“${game.name}” is open`,
+              body: `Players join with code ${game.code}.`,
+            })
+          }}
+        />
+      )}
+      <Panel
+        title={`${games.data?.length ?? 0} games`}
+        actions={
+          <button className="btn btn-primary btn-sm" onClick={() => setCreating(true)}>
+            + New game
+          </button>
+        }
+        flush
+      >
       {games.data && games.data.length > 0 ? (
         <div className="table-scroll">
           <table className="table">
@@ -687,9 +711,130 @@ function Games({ navigate }: { navigate: (path: string) => void }) {
           </table>
         </div>
       ) : (
-        <Empty icon="◫" title="No games yet">Create one from the lobby.</Empty>
+        <Empty icon="◫" title="No games yet">
+          <button className="btn btn-primary btn-sm" onClick={() => setCreating(true)}>
+            + New game
+          </button>
+        </Empty>
       )}
-    </Panel>
+      </Panel>
+    </>
+  )
+}
+
+/**
+ * Opening a game is an administrator-only act, so this lives in the console rather
+ * than anywhere a player can reach. The join code is generated server-side — it is
+ * what gets read aloud in the meeting, so it avoids I/O/0/1.
+ */
+function NewGameModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void
+  onCreated: (game: Game) => void
+}) {
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [cardSize, setCardSize] = useState(5)
+  const [freeSpace, setFreeSpace] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setBusy(true)
+    setError(null)
+    try {
+      const game = await api.createGame({
+        name: name.trim(),
+        description: description.trim(),
+        card_size: cardSize,
+        free_space: freeSpace,
+      })
+      onCreated(game)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create the game.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal
+      title="New game"
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button
+            className="btn btn-primary"
+            onClick={submit}
+            disabled={busy || name.trim().length < 2}
+          >
+            {busy ? 'Opening…' : 'Open game'}
+          </button>
+        </>
+      }
+    >
+      {error && <ErrorNote message={error} />}
+      <form className="col gap-12" onSubmit={submit}>
+        <div className="field">
+          <label className="label" htmlFor="game-name">Name</label>
+          <input
+            id="game-name"
+            className="input"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Q3 All-Hands"
+            maxLength={64}
+            autoFocus
+          />
+        </div>
+
+        <div className="field">
+          <label className="label" htmlFor="game-desc">Description <span className="faint">optional</span></label>
+          <input
+            id="game-desc"
+            className="input"
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="The quarterly alignment session that could have been an email."
+            maxLength={200}
+          />
+        </div>
+
+        <div className="row gap-16">
+          <div className="field grow">
+            <label className="label" htmlFor="game-size">Card size</label>
+            <select
+              id="game-size"
+              className="select"
+              value={cardSize}
+              onChange={(event) => setCardSize(Number(event.target.value))}
+            >
+              {/* Odd sizes only — the free space has to land in the centre. */}
+              <option value={3}>3 × 3 — quick</option>
+              <option value={5}>5 × 5 — classic</option>
+              <option value={7}>7 × 7 — long meeting</option>
+            </select>
+          </div>
+          <label className="field row gap-8" style={{ alignItems: 'center', marginTop: 18 }}>
+            <input
+              type="checkbox"
+              checked={freeSpace}
+              onChange={(event) => setFreeSpace(event.target.checked)}
+            />
+            <span style={{ fontSize: 13 }}>Free centre space</span>
+          </label>
+        </div>
+
+        <span className="faint" style={{ fontSize: 11.5 }}>
+          The game opens in the lobby so players can draft cards. Start it when the
+          meeting does — cards lock on the first token.
+        </span>
+      </form>
+    </Modal>
   )
 }
 

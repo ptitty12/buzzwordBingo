@@ -224,7 +224,10 @@ def generate_card_words(
             )
         chosen.extend(pool[:shortfall])
 
-    rng.shuffle(chosen)
+    # Deliberately *not* shuffled: the player arranges their own squares in the drafting
+    # preview, and a shuffle here would silently rearrange the card they just laid out.
+    # Auto-filled squares are already random because `pool` was shuffled above, so a
+    # card built with no picks at all is still a random one.
 
     layout: list[str | None] = []
     cursor = 0
@@ -258,9 +261,14 @@ def create_card(game: sqlite3.Row, player_id: str, word_ids: list[str] | None = 
             (game["id"], player_id),
         ).fetchone()
         if existing is not None:
-            if existing["locked"]:
-                raise PermissionError("This card is locked because the game is already live.")
-            conn.execute("DELETE FROM cards WHERE id = ?", (existing["id"],))
+            # Locking in is final. Redrafting after the fact would let a player watch the
+            # transcript, learn which words are landing, and rebuild around them — so the
+            # first card you commit to is the card you play.
+            raise PermissionError(
+                "You have already locked in your card for this game."
+                if not existing["locked"]
+                else "This card is locked because the game is already live."
+            )
 
         conn.execute(
             "INSERT INTO cards (id, game_id, player_id, created_at, locked)"

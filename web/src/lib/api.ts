@@ -114,6 +114,36 @@ export function currentToken(): string | null {
   return activeToken
 }
 
+/**
+ * Called when the server rejects the credential we just sent. A dead token is worse
+ * than no token: the UI keeps rendering as if you were signed in and every action
+ * fails. So we drop it at the source and let the app re-ask for an identity.
+ */
+type ExpiryListener = (scope: 'admin' | 'player') => void
+let onExpired: ExpiryListener | null = null
+
+export function setExpiryHandler(handler: ExpiryListener | null): void {
+  onExpired = handler
+}
+
+function discardActiveToken(): void {
+  if (!activeToken) return
+  const dead = activeToken
+  activeToken = null
+
+  if (auth.adminToken() === dead) {
+    auth.setAdminToken(null)
+    onExpired?.('admin')
+    return
+  }
+  const players = readJson<Record<string, string>>(PLAYERS_KEY, {})
+  const gameId = Object.keys(players).find((id) => players[id] === dead)
+  if (gameId) {
+    auth.setPlayerToken(gameId, null)
+    onExpired?.('player')
+  }
+}
+
 /* ------------------------------------------------------------------ transport */
 
 /** FastAPI returns `detail` as a string, or a list of validation objects. */
@@ -156,6 +186,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!response.ok) {
+    // 401 means the token itself is no longer good — expired, revoked, or signed with
+    // a key this server no longer has. Binning it here turns a permanent dead end into
+    // one trip back through the nickname (or PIN) screen.
+    if (response.status === 401) discardActiveToken()
     throw new ApiError(response.status, readDetail(payload, `Request failed (${response.status})`))
   }
   return payload as T

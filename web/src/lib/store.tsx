@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from 'react'
 
-import { activateAdmin, activateNone, activatePlayer, api, auth } from './api'
+import { activateAdmin, activateNone, activatePlayer, api, auth, setExpiryHandler } from './api'
 import type { Player } from './types'
 
 /* ------------------------------------------------------------------ toasts */
@@ -78,6 +78,8 @@ interface SessionApi {
   /** The player identity for the game currently being viewed, if any. */
   player: Player | null
   ready: boolean
+  /** Set when the server rejected a stored token, so the UI can explain the eviction. */
+  expired: 'admin' | 'player' | null
   signInAdmin: (token: string) => void
   signOutAdmin: () => void
   /** Record a freshly-joined player and make them the active identity. */
@@ -86,6 +88,8 @@ interface SessionApi {
   enterGame: (gameId: string) => Promise<void>
   leaveContext: () => void
   hasPlayerToken: (gameId: string) => boolean
+  /** Acknowledge an expiry notice once it has been shown. */
+  clearExpiry: () => void
 }
 
 const SessionContext = createContext<SessionApi | null>(null)
@@ -94,6 +98,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [isAdmin, setIsAdmin] = useState(false)
   const [player, setPlayer] = useState<Player | null>(null)
   const [ready, setReady] = useState(false)
+  const [expired, setExpired] = useState<'admin' | 'player' | null>(null)
+
+  // The API client bins a token the server rejects; mirror that into React state so
+  // the screen stops pretending the identity is still good.
+  useEffect(() => {
+    setExpiryHandler((scope) => {
+      if (scope === 'admin') setIsAdmin(false)
+      else setPlayer(null)
+      setExpired(scope)
+    })
+    return () => setExpiryHandler(null)
+  }, [])
 
   // Validate any stored admin token once on boot; a rejected token is discarded.
   useEffect(() => {
@@ -153,28 +169,34 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const hasPlayerToken = useCallback((gameId: string) => Boolean(auth.playerToken(gameId)), [])
 
+  const clearExpiry = useCallback(() => setExpired(null), [])
+
   const value = useMemo(
     () => ({
       isAdmin,
       player,
       ready,
+      expired,
       signInAdmin,
       signOutAdmin,
       joinedGame,
       enterGame,
       leaveContext,
       hasPlayerToken,
+      clearExpiry,
     }),
     [
       isAdmin,
       player,
       ready,
+      expired,
       signInAdmin,
       signOutAdmin,
       joinedGame,
       enterGame,
       leaveContext,
       hasPlayerToken,
+      clearExpiry,
     ],
   )
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>

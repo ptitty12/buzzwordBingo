@@ -151,7 +151,7 @@ ws://localhost:8000/ws/games/{game_id}?token={session_token}
 | `marks`       | one or more squares were marked                                    |
 | `bingo`       | a player completed a line                                          |
 | `game`        | status changed (lobby → live → paused → ended)                     |
-| `roster`      | a player joined or rebuilt their card                              |
+| `roster`      | a player joined or locked in their card                            |
 | `leaderboard` | standings recomputed                                               |
 
 Delivery is best-effort — a broken socket is dropped rather than blocking ingest, and
@@ -171,9 +171,13 @@ Join two games and you are two players, free to be `SynergySlayer` in one and
    remembered per game, so a refresh drops you back into the same seat.
 3. **Draft a card** — search and filter the pool, pick as many squares as you like, and
    anything you leave blank is auto-filled. "Surprise me" fills the whole card.
-4. **Wait for the meeting.** Squares light up as words are spoken. Cards lock when the
-   game goes live so nobody rebuilds after hearing the first buzzword.
-5. **Bingo** — any row, column or diagonal. Four corners and blackout are tracked too.
+4. **Arrange it.** Drag a square onto another to swap them, or tap one and then tap its
+   destination on touch. The preview is not a suggestion — the layout you build is the
+   card you are dealt.
+5. **Lock in.** This is final: no redrafting, and word proposals close with it. Both
+   would let you reshape your odds after hearing which words are landing.
+6. **Wait for the meeting.** Squares light up as words are spoken.
+7. **Bingo** — any row, column or diagonal. Four corners and blackout are tracked too.
    Ranking is first-to-bingo, tie-broken on lines completed, then squares marked.
 
 ### Proposing a word
@@ -193,7 +197,8 @@ difficulty the model picked. The judge also normalises spelling — `crosspollin
 enters the pool as *cross-pollination*, with the player's original spelling kept as an
 alias so the transcript matches either. Each player gets `SUGGESTIONS_PER_PLAYER`
 submissions per game (10 by default), and duplicates are caught before the model is
-called.
+called. Proposals close the moment you lock in a card — a word added after that could
+only ever land on somebody else's.
 
 Implementation: [`server/app/moderation.py`](server/app/moderation.py) — a single
 `claude-opus-5` call with a JSON-schema-constrained response. **Every failure path
@@ -233,7 +238,7 @@ Copy `.env.example` to `.env`. Every value has a working default for local devel
 
 | Variable                 | Default                 | Notes                                                 |
 | ------------------------ | ----------------------- | ----------------------------------------------------- |
-| `SECRET_KEY`             | *generated per process* | **Set this in production** or sessions die on restart  |
+| `SECRET_KEY`             | *generated, then saved* | Set explicitly in production — see below               |
 | `DATABASE_URL`           | `server/data/bingo.db`  | SQLite path, or `:memory:`                             |
 | `ADMIN_PIN`              | `2165`                  | The admin credential. Empty **disables** the console   |
 | `PROTECT_API_DOCS`       | `true`                  | Gate `/api/docs` behind HTTP Basic using the PIN       |
@@ -263,6 +268,14 @@ kinds of identity and they are not comparable:
 
 Ingest API keys are independent of both, stored as SHA-256 hashes and revocable, so a
 transcription vendor never holds a player or admin credential.
+
+**On `SECRET_KEY`.** Both token types are signed with it, so changing it invalidates
+every session at once. When it is unset, the server generates one on first boot and
+writes it to `.secret_key` beside the database (mode `600`) rather than keeping it in
+memory — a per-process key meant that any restart, including the autoreload that fires
+when you edit `.env`, silently signed out every player mid-draft. Set it explicitly in
+production anyway: it belongs with your other secrets, and a multi-process deployment
+needs every worker to agree on it.
 
 ---
 
