@@ -908,3 +908,73 @@ button, input, select, textarea { font: inherit; color: inherit; }
     transition-duration: .001ms !important;
   }
 }
+
+/* --------------------------------------------------------------- landing */
+
+.hero { text-align: center; padding: 44px 0 34px; }
+.hero-mark { width: 54px; height: 54px; border-radius: 16px; padding: 9px; margin: 0 auto 18px; }
+.hero h1 { font-size: clamp(30px, 6vw, 42px); letter-spacing: -0.035em; }
+.hero-tag { margin-top: 10px; color: var(--text-dim); font-size: 15px; }
+.hero-sub { margin-top: 4px; color: var(--text-faint); font-size: 13px; }
+
+.hero-code {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 22px;
+}
+.hero-code .input {
+  width: 168px;
+  text-align: center;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.landing-foot {
+  margin-top: 44px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+/* Admin PIN entry — wide tracking so 4 digits read as a code, not a word. */
+.pin-input {
+  text-align: center;
+  letter-spacing: .55em;
+  font-size: 19px;
+  padding-left: 12px;
+}
+
+/* --------------------------------------------------------------- verdicts */
+
+.verdict {
+  padding: 12px 14px;
+  border-radius: var(--r);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  font-size: 13px;
+}
+.verdict-icon { font-size: 15px; line-height: 1.3; flex: none; }
+.verdict-yes {
+  border-color: rgba(63, 207, 142, .38);
+  background: rgba(63, 207, 142, .1);
+}
+.verdict-yes .verdict-icon { color: var(--green); }
+.verdict-no {
+  border-color: rgba(248, 113, 113, .34);
+  background: rgba(248, 113, 113, .08);
+}
+.verdict-no .verdict-icon { color: var(--danger); }
+.verdict-wait {
+  border-color: rgba(251, 191, 36, .34);
+  background: rgba(251, 191, 36, .08);
+}
+.verdict-wait .verdict-icon { color: var(--warning); }
+
+.suggestion-row {
+  padding: 7px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}

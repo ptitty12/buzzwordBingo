@@ -36,15 +36,17 @@ class Settings(BaseSettings):
     #: Browser origins allowed to call the API.
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
-    #: Optional PIN gating admin sign-in. Empty (the default) leaves the admin console
-    #: open, which matches the "no passwords" product brief but is flagged in the UI.
-    admin_pin: str = ""
-
-    #: Nicknames automatically granted admin on first sign-up.
-    bootstrap_admins: str = "admin"
+    #: PIN required to reach the admin console. Administrators are not accounts — this
+    #: PIN *is* the admin credential, so an empty value disables admin access entirely
+    #: rather than leaving the console open.
+    admin_pin: str = "2165"
 
     #: When true, /api/ingest requires a valid X-API-Key header.
     ingest_require_key: bool = True
+
+    #: Gate the OpenAPI docs behind HTTP Basic using the admin PIN, so players poking
+    #: around the site never land on the integration surface.
+    protect_api_docs: bool = True
 
     #: Directory holding the built frontend. Served at "/" when present.
     static_dir: str = str(SERVER_ROOT.parent / "web" / "dist")
@@ -55,13 +57,25 @@ class Settings(BaseSettings):
     #: Rolling n-gram window retained per game for multi-word phrase detection.
     phrase_window: int = 8
 
+    # ----------------------------------------------------------------- word moderation
+
+    #: Anthropic API key for the buzzword judge. Without it, player suggestions queue
+    #: for manual admin review instead of being auto-decided.
+    anthropic_api_key: str = ""
+
+    #: Model used to judge whether a suggested word is "buzzwordy enough".
+    moderation_model: str = "claude-opus-5"
+
+    #: How many words a single player may suggest per game.
+    suggestions_per_player: int = 10
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     @property
-    def bootstrap_admin_list(self) -> list[str]:
-        return [n.strip().lower() for n in self.bootstrap_admins.split(",") if n.strip()]
+    def moderation_enabled(self) -> bool:
+        return bool(self.anthropic_api_key)
 
     @property
     def is_production(self) -> bool:

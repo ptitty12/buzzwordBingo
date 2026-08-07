@@ -1,4 +1,4 @@
-/** App-wide context: the signed-in player and the toast queue. */
+/** App-wide context: who you are right now, and the toast queue. */
 
 import {
   createContext,
@@ -11,8 +11,8 @@ import {
   type ReactNode,
 } from 'react'
 
-import { api, getToken, setToken } from './api'
-import type { Session, User } from './types'
+import { activateAdmin, activateNone, activatePlayer, api, auth } from './api'
+import type { Player } from './types'
 
 /* ------------------------------------------------------------------ toasts */
 
@@ -73,53 +73,110 @@ export function useToast(): ToastApi {
 /* ------------------------------------------------------------------ session */
 
 interface SessionApi {
-  user: User | null
+  /** True when an admin PIN has been exchanged for a token. */
+  isAdmin: boolean
+  /** The player identity for the game currently being viewed, if any. */
+  player: Player | null
   ready: boolean
-  signIn: (session: Session) => void
-  signOut: () => void
-  refresh: () => Promise<void>
+  signInAdmin: (token: string) => void
+  signOutAdmin: () => void
+  /** Record a freshly-joined player and make them the active identity. */
+  joinedGame: (gameId: string, token: string, player: Player) => void
+  /** Point the API client at a game (player token, or admin token if you hold one). */
+  enterGame: (gameId: string) => Promise<void>
+  leaveContext: () => void
+  hasPlayerToken: (gameId: string) => boolean
 }
 
 const SessionContext = createContext<SessionApi | null>(null)
 
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [player, setPlayer] = useState<Player | null>(null)
   const [ready, setReady] = useState(false)
 
-  // Restore a stored token on boot; a rejected token is discarded silently.
+  // Validate any stored admin token once on boot; a rejected token is discarded.
   useEffect(() => {
-    if (!getToken()) {
+    const stored = auth.adminToken()
+    if (!stored) {
       setReady(true)
       return
     }
+    activateAdmin()
     api
       .me()
-      .then(setUser)
-      .catch(() => setToken(null))
+      .then((identity) => setIsAdmin(identity.is_admin))
+      .catch(() => auth.setAdminToken(null))
       .finally(() => setReady(true))
   }, [])
 
-  const signIn = useCallback((session: Session) => {
-    setToken(session.token)
-    setUser(session.user)
+  const signInAdmin = useCallback((token: string) => {
+    auth.setAdminToken(token)
+    activateAdmin()
+    setIsAdmin(true)
   }, [])
 
-  const signOut = useCallback(() => {
-    setToken(null)
-    setUser(null)
+  const signOutAdmin = useCallback(() => {
+    auth.setAdminToken(null)
+    activateNone()
+    setIsAdmin(false)
     window.location.hash = '/'
   }, [])
 
-  const refresh = useCallback(async () => {
+  const joinedGame = useCallback((gameId: string, token: string, joined: Player) => {
+    auth.setPlayerToken(gameId, token)
+    activatePlayer(gameId)
+    setPlayer(joined)
+  }, [])
+
+  const enterGame = useCallback(async (gameId: string) => {
+    activatePlayer(gameId)
+    if (!auth.playerToken(gameId)) {
+      // Admins have no player identity of their own; that is expected, not an error.
+      setPlayer(null)
+      return
+    }
     try {
-      setUser(await api.me())
+      const identity = await api.me()
+      setPlayer(identity.player)
     } catch {
-      setToken(null)
-      setUser(null)
+      auth.setPlayerToken(gameId, null)
+      setPlayer(null)
     }
   }, [])
 
-  const value = useMemo(() => ({ user, ready, signIn, signOut, refresh }), [user, ready, signIn, signOut, refresh])
+  const leaveContext = useCallback(() => {
+    setPlayer(null)
+    if (auth.adminToken()) activateAdmin()
+    else activateNone()
+  }, [])
+
+  const hasPlayerToken = useCallback((gameId: string) => Boolean(auth.playerToken(gameId)), [])
+
+  const value = useMemo(
+    () => ({
+      isAdmin,
+      player,
+      ready,
+      signInAdmin,
+      signOutAdmin,
+      joinedGame,
+      enterGame,
+      leaveContext,
+      hasPlayerToken,
+    }),
+    [
+      isAdmin,
+      player,
+      ready,
+      signInAdmin,
+      signOutAdmin,
+      joinedGame,
+      enterGame,
+      leaveContext,
+      hasPlayerToken,
+    ],
+  )
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
 }
 

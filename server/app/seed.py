@@ -1,4 +1,4 @@
-"""Seed the database with a starter buzzword pool, an admin account and a demo game.
+"""Seed the database with a starter buzzword pool, an ingest key and a demo game.
 
 Seeding is idempotent: every insert is keyed on a natural unique column, so running it
 against an existing database only tops up what is missing.
@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 
-from .config import get_settings
 from .db import execute, new_id, query_one, record_audit, utcnow
 from .engine import invalidate_all_indexes
 from .lexicon import exact_key
@@ -164,7 +163,7 @@ WORD_POOL: list[tuple[str, str, int, list[str]]] = [
 ]
 
 
-def seed_words(actor_id: str | None = None) -> int:
+def seed_words() -> int:
     """Insert any missing words from the starter pool. Returns the number added."""
     added = 0
     now = utcnow()
@@ -175,10 +174,10 @@ def seed_words(actor_id: str | None = None) -> int:
         execute(
             """
             INSERT INTO words (id, text, text_key, category, difficulty, aliases, strict_match,
-                               active, created_at, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?)
+                               active, created_at, created_by, source)
+            VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, 'seed', 'seed')
             """,
-            (new_id(), text, key, category, difficulty, json.dumps(aliases), now, actor_id),
+            (new_id(), text, key, category, difficulty, json.dumps(aliases), now),
         )
         added += 1
     if added:
@@ -186,48 +185,23 @@ def seed_words(actor_id: str | None = None) -> int:
     return added
 
 
-def seed_admin() -> tuple[str, bool]:
-    """Ensure a bootstrap admin account exists. Returns ``(user_id, created)``."""
-    settings = get_settings()
-    nickname = (settings.bootstrap_admin_list or ["admin"])[0]
-    existing = query_one("SELECT * FROM users WHERE nickname_key = ?", (nickname,))
-    if existing is not None:
-        if not existing["is_admin"]:
-            execute("UPDATE users SET is_admin = 1 WHERE id = ?", (existing["id"],))
-        return existing["id"], False
-
-    user_id = new_id()
-    now = utcnow()
-    execute(
-        """
-        INSERT INTO users (id, nickname, nickname_key, avatar, accent, is_admin,
-                           created_at, last_seen_at)
-        VALUES (?, ?, ?, '⬢', 'green', 1, ?, ?)
-        """,
-        (user_id, nickname, nickname, now, now),
-    )
-    return user_id, True
-
-
-def seed_api_key(actor_id: str | None = None) -> str | None:
+def seed_api_key() -> str | None:
     """Create a first ingest key if none exists. Returns the plaintext key, once."""
     if query_one("SELECT id FROM api_keys WHERE active = 1"):
         return None
-    import hashlib
 
     full, prefix, key_hash = generate_api_key()
     execute(
         """
         INSERT INTO api_keys (id, name, prefix, key_hash, active, created_at, created_by)
-        VALUES (?, ?, ?, ?, 1, ?, ?)
+        VALUES (?, ?, ?, ?, 1, ?, 'seed')
         """,
-        (new_id(), "Default ingest key", prefix, hashlib.sha256(full.encode()).hexdigest(),
-         utcnow(), actor_id),
+        (new_id(), "Default ingest key", prefix, key_hash, utcnow()),
     )
     return full
 
 
-def seed_demo_game(actor_id: str | None = None) -> str | None:
+def seed_demo_game() -> str | None:
     """Create a demo game in the lobby if the instance has none."""
     if query_one("SELECT id FROM games LIMIT 1"):
         return None
@@ -236,14 +210,13 @@ def seed_demo_game(actor_id: str | None = None) -> str | None:
         """
         INSERT INTO games (id, name, code, status, card_size, free_space, created_at,
                            created_by, description)
-        VALUES (?, ?, ?, 'lobby', 5, 1, ?, ?, ?)
+        VALUES (?, ?, ?, 'lobby', 5, 1, ?, 'seed', ?)
         """,
         (
             game_id,
             "Q3 All-Hands",
             "DEMO1",
             utcnow(),
-            actor_id,
             "The quarterly alignment session that could have been an email.",
         ),
     )
@@ -251,22 +224,23 @@ def seed_demo_game(actor_id: str | None = None) -> str | None:
 
 
 def run_seed() -> dict:
-    """Full idempotent seed. Safe to call on every boot."""
-    admin_id, admin_created = seed_admin()
-    words_added = seed_words(admin_id)
-    api_key = seed_api_key(admin_id)
-    game_id = seed_demo_game(admin_id)
+    """Full idempotent seed. Safe to call on every boot.
 
-    if words_added or admin_created or api_key or game_id:
+    Note there is no admin account to create — administrators authenticate with a PIN,
+    and players are created when they join a game.
+    """
+    words_added = seed_words()
+    api_key = seed_api_key()
+    game_id = seed_demo_game()
+
+    if words_added or api_key or game_id:
         record_audit(
             "system.seeded",
             entity="system",
-            detail=f"words+{words_added} admin={admin_created} game={bool(game_id)}",
+            detail=f"words+{words_added} game={bool(game_id)}",
         )
 
     return {
-        "admin_id": admin_id,
-        "admin_created": admin_created,
         "words_added": words_added,
         "api_key": api_key,
         "demo_game_id": game_id,

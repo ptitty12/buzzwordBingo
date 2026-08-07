@@ -1,20 +1,24 @@
 """Application entrypoint.
 
 Wires the routers together, serves the built frontend, and exposes the OpenAPI contract
-at ``/api/docs``.
+at ``/api/docs`` — behind the admin PIN, so players never wander into the integration
+surface.
 """
 
 from __future__ import annotations
 
+import hmac
 import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
@@ -30,14 +34,19 @@ Real-time, transcript-driven bingo.
 **How it works**
 
 1. An admin curates the buzzword pool and opens a game.
-2. Players sign in with a nickname and draft a card from the pool.
+2. Players join a game with a nickname — no account — and draft a card from the pool.
 3. A transcription pipeline streams the meeting into `POST /api/ingest`, word by word.
 4. The matching engine stems each token (`synergies` -> `synergy`, `leveraged` ->
    `leverage`) and marks every card carrying that word.
 5. Completed lines are ranked on the live leaderboard, first to bingo wins.
 
+Players can also propose new buzzwords via `POST /api/words/suggest`; an LLM curator
+decides whether the term is jargon worth a square.
+
 Clients subscribe to `ws://<host>/ws/games/{game_id}` for the live event stream.
 """
+
+_basic = HTTPBasic(auto_error=False, description="Any username; password is the admin PIN.")
 
 
 def configure_logging(level: str) -> None:
@@ -61,7 +70,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if result["api_key"]:
         logger.warning("INGEST API KEY (shown once): %s", result["api_key"])
     if not settings.admin_pin:
-        logger.warning("ADMIN_PIN is unset — the admin console is open to anyone.")
+        logger.warning("ADMIN_PIN is empty — the admin console is disabled.")
+    if not settings.moderation_enabled:
+        logger.info(
+            "ANTHROPIC_API_KEY unset — player word suggestions will queue for admin review."
+        )
 
     yield
     logger.info("shutting down")
@@ -73,11 +86,12 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         description=API_DESCRIPTION,
-        version="1.0.0",
+        version="1.1.0",
         lifespan=lifespan,
-        docs_url="/api/docs",
-        redoc_url="/api/redoc",
-        openapi_url="/api/openapi.json",
+        # Docs are mounted manually below so they can sit behind the admin PIN.
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
 
     app.add_middleware(
@@ -100,6 +114,8 @@ def create_app() -> FastAPI:
         app.include_router(router)
     app.include_router(stream.router)
 
+    _mount_docs(app)
+
     @app.get("/api/health", tags=["system"])
     def health() -> dict:
         """Liveness probe with a database round-trip."""
@@ -120,6 +136,41 @@ def create_app() -> FastAPI:
     return app
 
 
+def _require_docs_access(credentials: HTTPBasicCredentials | None = Depends(_basic)) -> None:
+    """Gate the API reference behind the admin PIN.
+
+    HTTP Basic rather than a bearer token because these pages are opened directly in a
+    browser tab, where the native credential prompt is the only workable challenge.
+    """
+    settings = get_settings()
+    if not settings.protect_api_docs:
+        return
+
+    supplied = credentials.password if credentials else ""
+    if not settings.admin_pin or not hmac.compare_digest(supplied, settings.admin_pin):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Administrator PIN required.",
+            headers={"WWW-Authenticate": 'Basic realm="Buzzword Bingo API"'},
+        )
+
+
+def _mount_docs(app: FastAPI) -> None:
+    """Serve OpenAPI docs at the usual paths, guarded by :func:`_require_docs_access`."""
+
+    @app.get("/api/openapi.json", include_in_schema=False)
+    def openapi_schema(_: None = Depends(_require_docs_access)) -> JSONResponse:
+        return JSONResponse(app.openapi())
+
+    @app.get("/api/docs", include_in_schema=False)
+    def swagger_ui(_: None = Depends(_require_docs_access)):
+        return get_swagger_ui_html(openapi_url="/api/openapi.json", title=f"{app.title} — API")
+
+    @app.get("/api/redoc", include_in_schema=False)
+    def redoc(_: None = Depends(_require_docs_access)):
+        return get_redoc_html(openapi_url="/api/openapi.json", title=f"{app.title} — API")
+
+
 def _mount_frontend(app: FastAPI, static_dir: str) -> None:
     """Serve the built SPA when it exists, falling back to index.html for client routes."""
     dist = Path(static_dir)
@@ -129,7 +180,6 @@ def _mount_frontend(app: FastAPI, static_dir: str) -> None:
         def dev_placeholder() -> dict:
             return {
                 "message": "Buzzword Bingo API is running.",
-                "docs": "/api/docs",
                 "hint": "Run `npm run dev` for the frontend, or `npm run build` to serve it here.",
             }
         return
@@ -140,6 +190,12 @@ def _mount_frontend(app: FastAPI, static_dir: str) -> None:
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa(full_path: str) -> FileResponse:
+        # An unmatched API or WebSocket path is a real 404, not a client route —
+        # otherwise a typo'd endpoint silently returns the HTML shell with a 200 and
+        # the caller gets "Unexpected token '<'" instead of a usable error.
+        if full_path.startswith(("api/", "ws/")):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
+
         candidate = dist / full_path
         if full_path and candidate.is_file():
             return FileResponse(candidate)

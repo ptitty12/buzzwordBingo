@@ -1,13 +1,18 @@
 """Authentication and authorisation.
 
-The product brief calls for password-free accounts: a player picks a nickname from a
-dropdown or creates one. That means a session token is an *identity claim*, not a proof
-of secrecy — it is HMAC-signed so the server can trust that it issued the token, which
-stops clients from forging admin identity by editing localStorage.
+Two kinds of caller, deliberately asymmetric:
+
+* **Administrators** authenticate with a PIN and have no account. The PIN is the only
+  admin credential, so an empty ``ADMIN_PIN`` locks the console rather than opening it.
+* **Players** have no account either. They join one game with a nickname and receive a
+  token scoped to *that game* — it grants nothing anywhere else.
+
+Session tokens are HMAC-signed so the server can trust the identity claim without
+storing a secret per player. A token's subject is ``admin`` or ``p:<player_id>``.
 
 Two other credential types exist:
   * ``X-API-Key`` — required by the transcript ingest endpoint, stored as a SHA-256 hash.
-  * ``admin_pin`` — optional PIN gating admin sign-in (empty by default, see config).
+  * HTTP Basic with the admin PIN — gates the OpenAPI docs.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ import hashlib
 import hmac
 import secrets
 import sqlite3
+from dataclasses import dataclass
 
 from fastapi import Depends, Header, HTTPException, status
 
@@ -24,6 +30,30 @@ from .config import get_settings
 from .db import execute, query_one, utcnow
 
 API_KEY_PREFIX = "bb"
+ADMIN_SUBJECT = "admin"
+PLAYER_PREFIX = "p:"
+
+
+@dataclass(frozen=True)
+class Identity:
+    """Who is calling. Exactly one of ``is_admin`` / ``player`` is meaningful."""
+
+    is_admin: bool
+    player: sqlite3.Row | None = None
+
+    @property
+    def game_id(self) -> str | None:
+        return self.player["game_id"] if self.player is not None else None
+
+    @property
+    def display_name(self) -> str:
+        if self.is_admin:
+            return "admin"
+        return self.player["nickname"] if self.player is not None else "anonymous"
+
+    def owns_game(self, game_id: str) -> bool:
+        """Admins reach every game; a player reaches only the one they joined."""
+        return self.is_admin or self.game_id == game_id
 
 
 def _sign(payload: str) -> str:
@@ -32,14 +62,14 @@ def _sign(payload: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-def issue_token(user_id: str) -> str:
-    """Create a signed session token for a user id."""
-    payload = base64.urlsafe_b64encode(user_id.encode("utf-8")).decode("ascii").rstrip("=")
+def issue_token(subject: str) -> str:
+    """Create a signed session token for a subject (``admin`` or ``p:<player_id>``)."""
+    payload = base64.urlsafe_b64encode(subject.encode("utf-8")).decode("ascii").rstrip("=")
     return f"{payload}.{_sign(payload)}"
 
 
 def verify_token(token: str) -> str | None:
-    """Return the user id encoded in a token, or None when the signature is invalid."""
+    """Return the subject encoded in a token, or None when the signature is invalid."""
     if not token or "." not in token:
         return None
     payload, _, signature = token.partition(".")
@@ -50,6 +80,22 @@ def verify_token(token: str) -> str | None:
         return base64.urlsafe_b64decode(payload + padding).decode("utf-8")
     except (ValueError, UnicodeDecodeError):
         return None
+
+
+def issue_player_token(player_id: str) -> str:
+    return issue_token(f"{PLAYER_PREFIX}{player_id}")
+
+
+def issue_admin_token() -> str:
+    return issue_token(ADMIN_SUBJECT)
+
+
+def check_admin_pin(pin: str) -> bool:
+    """Constant-time PIN comparison. An unset PIN denies every attempt."""
+    configured = get_settings().admin_pin
+    if not configured:
+        return False
+    return hmac.compare_digest(pin or "", configured)
 
 
 def generate_api_key() -> tuple[str, str, str]:
@@ -73,40 +119,52 @@ def _extract_bearer(authorization: str | None) -> str:
     return token.strip() if scheme.lower() == "bearer" else authorization.strip()
 
 
-def current_user_optional(
-    authorization: str | None = Header(default=None),
-) -> sqlite3.Row | None:
-    """Resolve the caller from an ``Authorization: Bearer <token>`` header, if present."""
-    token = _extract_bearer(authorization)
-    if not token:
-        return None
-    user_id = verify_token(token)
-    if not user_id:
-        return None
-    return query_one("SELECT * FROM users WHERE id = ?", (user_id,))
+def current_identity(authorization: str | None = Header(default=None)) -> Identity:
+    """Resolve the caller. Returns an anonymous identity when no valid token is present."""
+    subject = verify_token(_extract_bearer(authorization))
+    if not subject:
+        return Identity(is_admin=False, player=None)
+
+    if subject == ADMIN_SUBJECT:
+        return Identity(is_admin=True, player=None)
+
+    if subject.startswith(PLAYER_PREFIX):
+        player = query_one("SELECT * FROM players WHERE id = ?", (subject[len(PLAYER_PREFIX):],))
+        if player is not None:
+            return Identity(is_admin=False, player=player)
+
+    return Identity(is_admin=False, player=None)
 
 
-def current_user(
-    user: sqlite3.Row | None = Depends(current_user_optional),
-) -> sqlite3.Row:
-    """Require an authenticated player."""
-    if user is None:
+def require_identity(identity: Identity = Depends(current_identity)) -> Identity:
+    """Require any authenticated caller — an admin or a player in some game."""
+    if not identity.is_admin and identity.player is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Sign in to continue.",
+            detail="Join a game to continue.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return user
+    return identity
 
 
-def require_admin(user: sqlite3.Row = Depends(current_user)) -> sqlite3.Row:
-    """Require an authenticated player carrying the admin flag."""
-    if not user["is_admin"]:
+def require_admin(identity: Identity = Depends(current_identity)) -> Identity:
+    """Require an administrator token."""
+    if not identity.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Administrator access required.",
         )
-    return user
+    return identity
+
+
+def require_player(identity: Identity = Depends(require_identity)) -> Identity:
+    """Require a player token specifically (admins have no card of their own)."""
+    if identity.player is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action is for players — join the game with a nickname.",
+        )
+    return identity
 
 
 def require_api_key(x_api_key: str | None = Header(default=None)) -> str:

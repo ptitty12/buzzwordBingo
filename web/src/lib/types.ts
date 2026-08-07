@@ -4,28 +4,39 @@ export type GameStatus = 'lobby' | 'live' | 'paused' | 'ended'
 
 export type Accent = 'green' | 'teal' | 'cyan' | 'violet' | 'amber' | 'lime' | 'rose' | 'sky'
 
-export interface User {
+/** A player exists only inside one game — there are no accounts. */
+export interface Player {
   id: string
+  game_id: string
   nickname: string
   avatar: string
   accent: Accent
-  is_admin: boolean
   created_at: string
   last_seen_at: string | null
 }
 
-export interface UserSummary {
-  id: string
-  nickname: string
-  avatar: string
-  accent: Accent
-  is_admin: boolean
-  games_played: number
+export interface PlayerSession {
+  token: string
+  player: Player
+  game_id: string
 }
 
-export interface Session {
+export interface AdminSession {
   token: string
-  user: User
+  is_admin: boolean
+}
+
+export interface Identity {
+  is_admin: boolean
+  player: Player | null
+}
+
+export interface AuthConfig {
+  app_name: string
+  environment: string
+  admin_enabled: boolean
+  suggestions_enabled: boolean
+  moderation_enabled: boolean
 }
 
 export interface Word {
@@ -37,6 +48,8 @@ export interface Word {
   strict_match: boolean
   active: boolean
   created_at: string
+  created_by: string
+  source: string
   usage_count: number
 }
 
@@ -70,7 +83,7 @@ export interface CardCell {
 export interface Card {
   id: string
   game_id: string
-  user_id: string
+  player_id: string
   nickname: string
   avatar: string
   accent: Accent
@@ -85,7 +98,7 @@ export interface Card {
 
 export interface LeaderboardEntry {
   position: number
-  user_id: string
+  player_id: string
   card_id: string
   nickname: string
   avatar: string
@@ -107,16 +120,26 @@ export interface TranscriptToken {
   created_at: string
 }
 
-export interface BingoRecord {
+/** A player's proposed buzzword and the judge's verdict. */
+export interface WordSuggestion {
   id: string
-  user_id: string
-  nickname: string
-  avatar: string
-  accent: Accent
-  pattern: string
-  label: string
-  rank: number
-  achieved_at: string
+  text: string
+  canonical: string
+  status: 'pending' | 'approved' | 'rejected'
+  verdict: string
+  category: string
+  difficulty: number
+  judged_by: string
+  player_name: string
+  word_id: string | null
+  created_at: string
+  decided_at: string | null
+}
+
+export interface SuggestionResponse {
+  suggestion: WordSuggestion
+  word: Word | null
+  remaining: number
 }
 
 export interface ApiKey {
@@ -141,8 +164,7 @@ export interface AuditEntry {
 }
 
 export interface AdminStats {
-  users: number
-  admins: number
+  players: number
   words: number
   active_words: number
   games: number
@@ -151,18 +173,14 @@ export interface AdminStats {
   tokens: number
   bingos: number
   connected_sockets: number
-  admin_pin_set: boolean
+  pending_suggestions: number
+  moderation_enabled: boolean
+  moderation_model: string
   environment: string
-}
-
-export interface AuthConfig {
-  admin_pin_required: boolean
-  environment: string
-  app_name: string
 }
 
 export interface IngestHit {
-  user_id: string
+  player_id: string
   nickname: string
   card_id: string
   position: number
@@ -182,7 +200,18 @@ export type GameEvent =
       }
     }
   | { event: 'marks'; payload: IngestHit[] }
-  | { event: 'bingo'; payload: { user_id: string; nickname: string; pattern: string; label: string; rank: number; cells: number[]; achieved_at: string } }
+  | {
+      event: 'bingo'
+      payload: {
+        player_id: string
+        nickname: string
+        pattern: string
+        label: string
+        rank: number
+        cells: number[]
+        achieved_at: string
+      }
+    }
   | { event: 'game'; payload: Game }
-  | { event: 'roster'; payload: { user_id: string; nickname: string; card_id: string } }
+  | { event: 'roster'; payload: { player_id: string; nickname: string; card_id?: string } }
   | { event: 'leaderboard'; payload: LeaderboardEntry[] }

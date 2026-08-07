@@ -1,4 +1,8 @@
-"""Games, cards, leaderboards and transcript history."""
+"""Games, joining, cards, leaderboards and transcript history.
+
+The lobby is public — you have to be able to see a game before you can join it — but
+everything scoped to a game requires a token for *that* game (or an admin token).
+"""
 
 from __future__ import annotations
 
@@ -16,12 +20,21 @@ from ..models import (
     GameCreate,
     GamePublic,
     GameStatusUpdate,
+    JoinRequest,
     LeaderboardEntry,
+    PlayerSession,
     TranscriptToken,
 )
 from ..realtime import hub
-from ..security import current_user, require_admin
-from ..serializers import GAME_SELECT, card_public, game_public
+from ..security import (
+    Identity,
+    current_identity,
+    issue_player_token,
+    require_admin,
+    require_identity,
+    require_player,
+)
+from ..serializers import GAME_SELECT, card_public, game_public, player_public
 
 router = APIRouter(prefix="/api/games", tags=["games"])
 
@@ -43,12 +56,23 @@ def _load_game(game_id: str) -> sqlite3.Row:
     return row
 
 
+def _require_membership(identity: Identity, game: sqlite3.Row) -> None:
+    """A player token is valid only inside the game it was issued for."""
+    if not identity.owns_game(game["id"]):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your nickname belongs to a different game — join this one to play.",
+        )
+
+
+# --------------------------------------------------------------------------- lobby
+
+
 @router.get("", response_model=list[GamePublic])
 def list_games(
     status_filter: str | None = Query(default=None, alias="status"),
-    _user: sqlite3.Row = Depends(current_user),
 ) -> list[GamePublic]:
-    """All games, newest first. Live games sort to the top of the lobby."""
+    """Public lobby. Live games sort to the top."""
     where = "WHERE g.status = ?" if status_filter else ""
     params = (status_filter,) if status_filter else ()
     rows = query_all(
@@ -64,20 +88,84 @@ def list_games(
 
 
 @router.get("/{game_id}", response_model=GamePublic)
-def get_game(game_id: str, _user: sqlite3.Row = Depends(current_user)) -> GamePublic:
+def get_game(game_id: str) -> GamePublic:
+    """Public game details, so a join screen can render before anyone has a token."""
     return game_public(_load_game(game_id))
 
 
+@router.post("/{game_id}/join", response_model=PlayerSession, status_code=status.HTTP_201_CREATED)
+async def join_game(game_id: str, payload: JoinRequest) -> PlayerSession:
+    """Enter a game with a nickname. No account, no password — this *is* the sign-up.
+
+    Nicknames are unique per game, so re-joining with the same nickname resumes that
+    identity (and its card) rather than colliding — which is what you want when someone
+    refreshes the page or switches devices mid-meeting.
+    """
+    game = _load_game(game_id)
+    if game["status"] == "ended":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This game has ended.")
+
+    nickname_key = payload.nickname.lower()
+    existing = query_one(
+        "SELECT * FROM players WHERE game_id = ? AND nickname_key = ?",
+        (game["id"], nickname_key),
+    )
+
+    if existing is not None:
+        execute("UPDATE players SET last_seen_at = ? WHERE id = ?", (utcnow(), existing["id"]))
+        refreshed = query_one("SELECT * FROM players WHERE id = ?", (existing["id"],))
+        assert refreshed is not None
+        return PlayerSession(
+            token=issue_player_token(refreshed["id"]),
+            player=player_public(refreshed),
+            game_id=game["id"],
+        )
+
+    player_id = new_id()
+    now = utcnow()
+    avatar = payload.avatar or "◆"
+    execute(
+        """
+        INSERT INTO players (id, game_id, nickname, nickname_key, avatar, accent,
+                             created_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (player_id, game["id"], payload.nickname, nickname_key, avatar, payload.accent, now, now),
+    )
+    record_audit(
+        "player.joined",
+        actor_id=player_id,
+        actor_name=payload.nickname,
+        entity="game",
+        entity_id=game["id"],
+        detail=game["name"],
+    )
+
+    created = query_one("SELECT * FROM players WHERE id = ?", (player_id,))
+    assert created is not None
+    await hub.broadcast(
+        game["id"], "roster", {"player_id": player_id, "nickname": payload.nickname}
+    )
+    return PlayerSession(
+        token=issue_player_token(player_id),
+        player=player_public(created),
+        game_id=game["id"],
+    )
+
+
+# --------------------------------------------------------------------------- admin control
+
+
 @router.post("", response_model=GamePublic, status_code=status.HTTP_201_CREATED)
-def create_game(payload: GameCreate, admin: sqlite3.Row = Depends(require_admin)) -> GamePublic:
-    """Open a new game in the lobby."""
+def create_game(payload: GameCreate, _admin: Identity = Depends(require_admin)) -> GamePublic:
+    """Open a new game. Administrators only."""
     game_id = new_id()
     code = _generate_code()
     execute(
         """
         INSERT INTO games (id, name, code, status, card_size, free_space, created_at,
                            created_by, description)
-        VALUES (?, ?, ?, 'lobby', ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, 'lobby', ?, ?, ?, 'admin', ?)
         """,
         (
             game_id,
@@ -86,14 +174,12 @@ def create_game(payload: GameCreate, admin: sqlite3.Row = Depends(require_admin)
             payload.card_size,
             int(payload.free_space),
             utcnow(),
-            admin["id"],
             payload.description,
         ),
     )
     record_audit(
         "game.created",
-        actor_id=admin["id"],
-        actor_name=admin["nickname"],
+        actor_name="admin",
         entity="game",
         entity_id=game_id,
         detail=f"{payload.name} ({code})",
@@ -103,7 +189,7 @@ def create_game(payload: GameCreate, admin: sqlite3.Row = Depends(require_admin)
 
 @router.patch("/{game_id}/status", response_model=GamePublic)
 async def update_status(
-    game_id: str, payload: GameStatusUpdate, admin: sqlite3.Row = Depends(require_admin)
+    game_id: str, payload: GameStatusUpdate, _admin: Identity = Depends(require_admin)
 ) -> GamePublic:
     """Drive a game through its lifecycle: lobby -> live -> paused -> ended.
 
@@ -131,8 +217,7 @@ async def update_status(
 
     record_audit(
         "game.status",
-        actor_id=admin["id"],
-        actor_name=admin["nickname"],
+        actor_name="admin",
         entity="game",
         entity_id=game["id"],
         detail=payload.status,
@@ -143,7 +228,7 @@ async def update_status(
 
 
 @router.post("/{game_id}/reset", response_model=GamePublic)
-async def reset_game(game_id: str, admin: sqlite3.Row = Depends(require_admin)) -> GamePublic:
+async def reset_game(game_id: str, _admin: Identity = Depends(require_admin)) -> GamePublic:
     """Clear the transcript, marks and wins while keeping players and their cards."""
     game = _load_game(game_id)
     execute("DELETE FROM bingos WHERE game_id = ?", (game["id"],))
@@ -164,12 +249,7 @@ async def reset_game(game_id: str, admin: sqlite3.Row = Depends(require_admin)) 
     invalidate_index(game["id"])
 
     record_audit(
-        "game.reset",
-        actor_id=admin["id"],
-        actor_name=admin["nickname"],
-        entity="game",
-        entity_id=game["id"],
-        detail=game["name"],
+        "game.reset", actor_name="admin", entity="game", entity_id=game["id"], detail=game["name"]
     )
     updated = _load_game(game["id"])
     await hub.broadcast(game["id"], "game", game_public(updated).model_dump())
@@ -177,14 +257,13 @@ async def reset_game(game_id: str, admin: sqlite3.Row = Depends(require_admin)) 
 
 
 @router.delete("/{game_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_game(game_id: str, admin: sqlite3.Row = Depends(require_admin)) -> None:
+def delete_game(game_id: str, _admin: Identity = Depends(require_admin)) -> None:
     game = _load_game(game_id)
     execute("DELETE FROM games WHERE id = ?", (game["id"],))
     invalidate_index(game["id"])
     record_audit(
         "game.deleted",
-        actor_id=admin["id"],
-        actor_name=admin["nickname"],
+        actor_name="admin",
         entity="game",
         entity_id=game["id"],
         detail=game["name"],
@@ -195,11 +274,15 @@ def delete_game(game_id: str, admin: sqlite3.Row = Depends(require_admin)) -> No
 
 
 @router.get("/{game_id}/card", response_model=CardPublic)
-def get_my_card(game_id: str, user: sqlite3.Row = Depends(current_user)) -> CardPublic:
+def get_my_card(game_id: str, identity: Identity = Depends(require_player)) -> CardPublic:
     """The caller's own card for a game."""
     game = _load_game(game_id)
+    _require_membership(identity, game)
+    assert identity.player is not None
+
     row = query_one(
-        "SELECT id FROM cards WHERE game_id = ? AND user_id = ?", (game["id"], user["id"])
+        "SELECT id FROM cards WHERE game_id = ? AND player_id = ?",
+        (game["id"], identity.player["id"]),
     )
     if row is None:
         raise HTTPException(
@@ -212,7 +295,7 @@ def get_my_card(game_id: str, user: sqlite3.Row = Depends(current_user)) -> Card
 
 @router.post("/{game_id}/card", response_model=CardPublic, status_code=status.HTTP_201_CREATED)
 async def build_card(
-    game_id: str, payload: CardCreate, user: sqlite3.Row = Depends(current_user)
+    game_id: str, payload: CardCreate, identity: Identity = Depends(require_player)
 ) -> CardPublic:
     """Build or rebuild the caller's card.
 
@@ -220,11 +303,14 @@ async def build_card(
     "draft every square" and "surprise me" are the same endpoint.
     """
     game = _load_game(game_id)
+    _require_membership(identity, game)
+    assert identity.player is not None
+
     if game["status"] == "ended":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This game has ended.")
 
     try:
-        card_id = create_card(game, user["id"], payload.word_ids)
+        card_id = create_card(game, identity.player["id"], payload.word_ids)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
@@ -237,20 +323,24 @@ async def build_card(
     await hub.broadcast(
         game["id"],
         "roster",
-        {"user_id": user["id"], "nickname": user["nickname"], "card_id": card_id},
+        {
+            "player_id": identity.player["id"],
+            "nickname": identity.player["nickname"],
+            "card_id": card_id,
+        },
     )
     await hub.broadcast(game["id"], "leaderboard", leaderboard(game["id"]))
     return card
 
 
 @router.get("/{game_id}/cards", response_model=list[CardPublic])
-def list_cards(game_id: str, _admin: sqlite3.Row = Depends(require_admin)) -> list[CardPublic]:
+def list_cards(game_id: str, _admin: Identity = Depends(require_admin)) -> list[CardPublic]:
     """Every card in the game — the admin "see everyone's cards" view."""
     game = _load_game(game_id)
     rows = query_all(
         """
-        SELECT cd.id FROM cards cd JOIN users u ON u.id = cd.user_id
-        WHERE cd.game_id = ? ORDER BY u.nickname COLLATE NOCASE
+        SELECT cd.id FROM cards cd JOIN players p ON p.id = cd.player_id
+        WHERE cd.game_id = ? ORDER BY p.nickname COLLATE NOCASE
         """,
         (game["id"],),
     )
@@ -259,17 +349,17 @@ def list_cards(game_id: str, _admin: sqlite3.Row = Depends(require_admin)) -> li
 
 @router.get("/{game_id}/cards/{card_id}", response_model=CardPublic)
 def get_card(
-    game_id: str, card_id: str, user: sqlite3.Row = Depends(current_user)
+    game_id: str, card_id: str, identity: Identity = Depends(require_identity)
 ) -> CardPublic:
     """Inspect one card. Players may only read their own unless they are an admin."""
     game = _load_game(game_id)
     card = card_public(card_id)
     if card is None or card.game_id != game["id"]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card not found.")
-    if card.user_id != user["id"] and not user["is_admin"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="That is not your card."
-        )
+
+    owner = identity.player is not None and identity.player["id"] == card.player_id
+    if not owner and not identity.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="That is not your card.")
     return card
 
 
@@ -278,10 +368,14 @@ def get_card(
 
 @router.get("/{game_id}/leaderboard", response_model=list[LeaderboardEntry])
 def get_leaderboard(
-    game_id: str, _user: sqlite3.Row = Depends(current_user)
+    game_id: str, identity: Identity = Depends(current_identity)
 ) -> list[LeaderboardEntry]:
-    """Standings. First to bingo wins; ties break on lines, then squares marked."""
+    """Standings. First to bingo wins; ties break on lines, then squares marked.
+
+    Open to spectators — the leaderboard is the part you want on the big screen.
+    """
     game = _load_game(game_id)
+    del identity  # standings are not player-specific
     return [LeaderboardEntry(**entry) for entry in leaderboard(game["id"])]
 
 
@@ -289,10 +383,11 @@ def get_leaderboard(
 def get_transcript(
     game_id: str,
     limit: int = Query(default=100, ge=1, le=1000),
-    _user: sqlite3.Row = Depends(current_user),
+    identity: Identity = Depends(current_identity),
 ) -> list[TranscriptToken]:
     """Recent transcript tokens, oldest first — used to backfill the ticker on load."""
     game = _load_game(game_id)
+    del identity
     rows = query_all(
         "SELECT * FROM transcript_tokens WHERE game_id = ? ORDER BY seq DESC LIMIT ?",
         (game["id"], limit),
@@ -301,13 +396,13 @@ def get_transcript(
 
 
 @router.get("/{game_id}/bingos")
-def get_bingos(game_id: str, _user: sqlite3.Row = Depends(current_user)) -> list[dict]:
+def get_bingos(game_id: str) -> list[dict]:
     """Every winning line in the game, in the order they were achieved."""
     game = _load_game(game_id)
     rows = query_all(
         """
-        SELECT b.*, u.nickname, u.avatar, u.accent
-        FROM bingos b JOIN users u ON u.id = b.user_id
+        SELECT b.*, p.nickname, p.avatar, p.accent
+        FROM bingos b JOIN players p ON p.id = b.player_id
         WHERE b.game_id = ? ORDER BY b.rank
         """,
         (game["id"],),
@@ -315,7 +410,7 @@ def get_bingos(game_id: str, _user: sqlite3.Row = Depends(current_user)) -> list
     return [
         {
             "id": row["id"],
-            "user_id": row["user_id"],
+            "player_id": row["player_id"],
             "nickname": row["nickname"],
             "avatar": row["avatar"],
             "accent": row["accent"],

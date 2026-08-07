@@ -12,6 +12,7 @@ import { api } from '../lib/api'
 import { useAsync, useDebounced, useGameSocket } from '../lib/hooks'
 import { useSession, useToast } from '../lib/store'
 import { BingoGrid, Celebration, Leaderboard, Ticker } from '../components/BingoCard'
+import { SuggestWordButton } from '../components/SuggestWord'
 import {
   Difficulty,
   Empty,
@@ -32,8 +33,9 @@ import type {
 const MAX_TICKER_TOKENS = 260
 
 export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path: string) => void }) {
-  const { user } = useSession()
+  const { player, isAdmin } = useSession()
   const { push } = useToast()
+  const myPlayerId = player?.id
 
   const game = useAsync(() => api.game(gameId), [gameId])
   const [card, setCard] = useState<Card | null>(null)
@@ -46,25 +48,31 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
   const [rebuilding, setRebuilding] = useState(false)
 
   const gameData = game.data
+  // Admins browse every game but play in none of them.
+  const spectating = isAdmin && !myPlayerId
   const cardRef = useRef<Card | null>(null)
   cardRef.current = card
 
   // Initial load: card (may legitimately 404), transcript backfill, standings.
+  // An admin watching a game holds no player identity and therefore has no card —
+  // that is spectating, not an error, so we do not even ask for one.
   useEffect(() => {
     let cancelled = false
     setCard(null)
     setCardMissing(false)
     setRebuilding(false)
 
-    api
-      .myCard(gameId)
-      .then((result) => !cancelled && setCard(result))
-      .catch((err: unknown) => {
-        if (cancelled) return
-        const status = (err as { status?: number }).status
-        if (status === 404) setCardMissing(true)
-        else setCardError(err instanceof Error ? err.message : 'Could not load your card.')
-      })
+    if (!spectating) {
+      api
+        .myCard(gameId)
+        .then((result) => !cancelled && setCard(result))
+        .catch((err: unknown) => {
+          if (cancelled) return
+          const status = (err as { status?: number }).status
+          if (status === 404) setCardMissing(true)
+          else setCardError(err instanceof Error ? err.message : 'Could not load your card.')
+        })
+    }
 
     api.transcript(gameId).then((result) => !cancelled && setTokens(result)).catch(() => undefined)
     api.leaderboard(gameId).then((result) => !cancelled && setBoard(result)).catch(() => undefined)
@@ -72,7 +80,7 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
     return () => {
       cancelled = true
     }
-  }, [gameId])
+  }, [gameId, spectating])
 
   const refreshCard = useCallback(() => {
     api
@@ -118,7 +126,7 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
         }
 
         case 'marks': {
-          const mine = event.payload.filter((hit) => hit.user_id === user?.id)
+          const mine = event.payload.filter((hit) => hit.player_id === myPlayerId)
           if (mine.length === 0) break
           setCard((current) => {
             if (!current) return current
@@ -142,7 +150,7 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
         }
 
         case 'bingo': {
-          const isMe = event.payload.user_id === user?.id
+          const isMe = event.payload.player_id === myPlayerId
           if (isMe) {
             setCard((current) =>
               current ? { ...current, lines: [...new Set([...current.lines, event.payload.pattern])] } : current,
@@ -163,13 +171,13 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
           break
 
         case 'roster':
-          if (event.payload.user_id !== user?.id) {
+          if (event.payload.player_id !== myPlayerId) {
             push({ kind: 'info', title: `${event.payload.nickname} joined` })
           }
           break
       }
     },
-    [game, push, refreshCard, user?.id],
+    [game, push, refreshCard, myPlayerId],
   )
 
   const socket = useGameSocket(gameId, onEvent)
@@ -179,8 +187,8 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
     return (
       <div className="page">
         <ErrorNote message={game.error ?? 'Game not found.'} />
-        <button className="btn" style={{ marginTop: 14 }} onClick={() => navigate('lobby')}>
-          ← Back to lobby
+        <button className="btn" style={{ marginTop: 14 }} onClick={() => navigate('')}>
+          ← All games
         </button>
       </div>
     )
@@ -196,13 +204,20 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
         game={gameData}
         viewers={viewers}
         socket={socket}
-        onBack={() => navigate('lobby')}
+        onBack={() => navigate('')}
         onChanged={game.reload}
       />
 
       {cardError && <ErrorNote message={cardError} />}
 
-      {showBuilder ? (
+      {spectating ? (
+        <Spectator
+          gameId={gameId}
+          tokens={tokens}
+          board={board}
+          onOpenCards={() => navigate('admin')}
+        />
+      ) : showBuilder ? (
         <CardBuilder
           gameId={gameId}
           cardSize={gameData.card_size}
@@ -232,11 +247,14 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
               }
               subtitle={`${card.marked_count} of ${card.cells.length} squares marked`}
               actions={
-                !card.locked && (
-                  <button className="btn btn-sm" onClick={() => setRebuilding(true)}>
-                    Rebuild
-                  </button>
-                )
+                <>
+                  <SuggestWordButton />
+                  {!card.locked && (
+                    <button className="btn btn-sm" onClick={() => setRebuilding(true)}>
+                      Rebuild
+                    </button>
+                  )}
+                </>
               }
             >
               <BingoGrid card={card} />
@@ -257,7 +275,7 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
               subtitle="First to bingo wins"
               flush
             >
-              <Leaderboard entries={board} meId={user?.id} />
+              <Leaderboard entries={board} meId={myPlayerId} />
             </Panel>
           </div>
         </div>
@@ -283,7 +301,7 @@ function GameHeader({
   onBack: () => void
   onChanged: () => void
 }) {
-  const { user } = useSession()
+  const { isAdmin } = useSession()
   const { push } = useToast()
   const [busy, setBusy] = useState(false)
 
@@ -337,7 +355,7 @@ function GameHeader({
           </div>
         </div>
 
-        {user?.is_admin && (
+        {isAdmin && (
           <div className="row gap-6 wrap">
             {game.status !== 'live' && (
               <button
@@ -488,7 +506,7 @@ function CardBuilder({
       })
     }
     return {
-      id: 'preview', game_id: gameId, user_id: '', nickname: 'Preview', avatar: '', accent: 'green',
+      id: 'preview', game_id: gameId, player_id: '', nickname: 'Preview', avatar: '', accent: 'green',
       card_size: cardSize, locked: false, created_at: '', cells, marked_count: 0, lines: [], best_rank: null,
     }
   }, [selected, words.data, cardSize, freeSpace, gameId])
@@ -502,10 +520,15 @@ function CardBuilder({
         subtitle={`Pick up to ${capacity} buzzwords — anything you leave blank is filled at random.`}
         actions={
           <>
+            <SuggestWordButton onWordAdded={words.reload} />
             <button className="btn btn-sm" onClick={randomFill} disabled={remaining <= 0}>
               Surprise me
             </button>
-            <button className="btn btn-sm" onClick={() => setSelected([])} disabled={selected.length === 0}>
+            <button
+              className="btn btn-sm"
+              onClick={() => setSelected([])}
+              disabled={selected.length === 0}
+            >
               Clear
             </button>
           </>
@@ -591,6 +614,80 @@ function CardBuilder({
             Squares mark themselves when the word is spoken — inflections count too, so
             “synergies” marks <em>synergy</em> and “leveraged” marks <em>leverage</em>.
           </p>
+        </Panel>
+      </div>
+    </div>
+  )
+}
+
+
+/* ------------------------------------------------------------------ spectator */
+
+/**
+ * What an administrator sees in a game room: the room's live state without a card,
+ * because admins do not hold a player identity and cannot draft one.
+ */
+function Spectator({
+  gameId,
+  tokens,
+  board,
+  onOpenCards,
+}: {
+  gameId: string
+  tokens: TranscriptToken[]
+  board: LeaderboardEntry[]
+  onOpenCards: () => void
+}) {
+  const cards = useAsync(() => api.gameCards(gameId), [gameId])
+
+  return (
+    <div className="split split-wide">
+      <div className="col gap-16">
+        <Panel
+          title="Live transcript"
+          subtitle="Matched buzzwords light up as they are spoken"
+          flush
+        >
+          <Ticker tokens={tokens} />
+        </Panel>
+
+        <Panel
+          title={`${cards.data?.length ?? 0} cards in play`}
+          subtitle="You are watching as an administrator — you have no card of your own"
+          actions={
+            <button className="btn btn-sm" onClick={onOpenCards}>
+              Open console
+            </button>
+          }
+        >
+          {cards.loading && <Spinner />}
+          {cards.data && cards.data.length === 0 && (
+            <Empty icon="▦" title="Nobody has joined yet">
+              Share the game code and players can drop in with a nickname.
+            </Empty>
+          )}
+          <div
+            className="game-grid"
+            style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}
+          >
+            {(cards.data ?? []).map((entry) => (
+              <div key={entry.id} className="col gap-6">
+                <div className="row gap-8">
+                  <span style={{ fontWeight: 620, fontSize: 13 }}>{entry.nickname}</span>
+                  <span className="faint" style={{ fontSize: 11.5 }}>
+                    {entry.marked_count}/{entry.cells.length}
+                  </span>
+                </div>
+                <BingoGrid card={entry} compact />
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+
+      <div className="sticky-side">
+        <Panel title="Leaderboard" subtitle="First to bingo wins" flush>
+          <Leaderboard entries={board} />
         </Panel>
       </div>
     </div>

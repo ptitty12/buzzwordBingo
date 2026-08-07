@@ -1,27 +1,31 @@
 /**
  * Typed API client.
  *
- * One module owns the base URL, the bearer token and error shaping, so views never
- * touch fetch directly and every failure surfaces as a readable ApiError.
+ * Credentials are unusual here and the store reflects that: there is one admin token
+ * (earned with the PIN) and a *separate token per game* for the player identities you
+ * hold. Requests carry whichever token the current view activated, so a player token
+ * can never leak into an admin call or into another game's requests.
  */
 
 import type {
+  AdminSession,
   AdminStats,
   ApiKey,
   AuditEntry,
   AuthConfig,
-  BingoRecord,
   Card,
   Game,
+  Identity,
   LeaderboardEntry,
-  Session,
+  PlayerSession,
+  SuggestionResponse,
   TranscriptToken,
-  User,
-  UserSummary,
   Word,
+  WordSuggestion,
 } from './types'
 
-const TOKEN_KEY = 'bb.token'
+const ADMIN_KEY = 'bb.admin'
+const PLAYERS_KEY = 'bb.players'
 
 export class ApiError extends Error {
   status: number
@@ -32,22 +36,85 @@ export class ApiError extends Error {
   }
 }
 
-export function getToken(): string | null {
+/* ------------------------------------------------------------------ credential store */
+
+function readJson<T>(key: string, fallback: T): T {
   try {
-    return localStorage.getItem(TOKEN_KEY)
+    const raw = localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as T) : fallback
   } catch {
-    return null
+    return fallback
   }
 }
 
-export function setToken(token: string | null): void {
+function writeJson(key: string, value: unknown): void {
   try {
-    if (token) localStorage.setItem(TOKEN_KEY, token)
-    else localStorage.removeItem(TOKEN_KEY)
+    localStorage.setItem(key, JSON.stringify(value))
   } catch {
-    /* storage unavailable (private mode) — session simply won't persist */
+    /* storage unavailable (private mode) — the session simply won't persist */
   }
 }
+
+export const auth = {
+  adminToken(): string | null {
+    try {
+      return localStorage.getItem(ADMIN_KEY)
+    } catch {
+      return null
+    }
+  },
+  setAdminToken(token: string | null): void {
+    try {
+      if (token) localStorage.setItem(ADMIN_KEY, token)
+      else localStorage.removeItem(ADMIN_KEY)
+    } catch {
+      /* ignore */
+    }
+  },
+  playerToken(gameId: string): string | null {
+    return readJson<Record<string, string>>(PLAYERS_KEY, {})[gameId] ?? null
+  },
+  setPlayerToken(gameId: string, token: string | null): void {
+    const all = readJson<Record<string, string>>(PLAYERS_KEY, {})
+    if (token) all[gameId] = token
+    else delete all[gameId]
+    writeJson(PLAYERS_KEY, all)
+  },
+  clearAll(): void {
+    try {
+      localStorage.removeItem(ADMIN_KEY)
+      localStorage.removeItem(PLAYERS_KEY)
+    } catch {
+      /* ignore */
+    }
+  },
+}
+
+/**
+ * The token attached to outgoing requests. Views call `activate*` when they mount, so
+ * the credential in play always matches the screen you are looking at.
+ */
+let activeToken: string | null = null
+
+export function activateAdmin(): void {
+  activeToken = auth.adminToken()
+}
+
+export function activatePlayer(gameId: string): void {
+  // Admins browsing a game keep their admin token — it outranks a player token and
+  // is what the admin-only endpoints on that screen require.
+  activeToken = auth.adminToken() ?? auth.playerToken(gameId)
+}
+
+export function activateNone(): void {
+  activeToken = null
+}
+
+export function currentToken(): string | null {
+  return activeToken
+}
+
+/* ------------------------------------------------------------------ transport */
 
 /** FastAPI returns `detail` as a string, or a list of validation objects. */
 function readDetail(payload: unknown, fallback: string): string {
@@ -67,8 +134,7 @@ function readDetail(payload: unknown, fallback: string): string {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
-  const token = getToken()
-  if (token) headers.set('Authorization', `Bearer ${token}`)
+  if (activeToken) headers.set('Authorization', `Bearer ${activeToken}`)
 
   let response: Response
   try {
@@ -113,17 +179,45 @@ const qs = (params: Record<string, string | number | boolean | undefined>) => {
 
 export const api = {
   // -------------------------------------------------------------- auth
-  authConfig: () => get<AuthConfig>('/api/auth/config'),
-  listAccounts: () => get<UserSummary[]>('/api/auth/users'),
-  signUp: (body: { nickname: string; avatar?: string; accent?: string }) =>
-    post<Session>('/api/auth/signup', body),
-  signIn: (body: { user_id: string; admin_pin?: string }) => post<Session>('/api/auth/signin', body),
-  me: () => get<User>('/api/auth/me'),
+  config: () => get<AuthConfig>('/api/auth/config'),
+  adminSignIn: (pin: string) => post<AdminSession>('/api/auth/admin', { pin }),
+  me: () => get<Identity>('/api/auth/me'),
+
+  // -------------------------------------------------------------- games (public)
+  games: (status?: string) => get<Game[]>(`/api/games${qs({ status })}`),
+  game: (id: string) => get<Game>(`/api/games/${id}`),
+  join: (gameId: string, body: { nickname: string; avatar?: string; accent?: string }) =>
+    post<PlayerSession>(`/api/games/${gameId}/join`, body),
+
+  // -------------------------------------------------------------- games (admin)
+  createGame: (body: {
+    name: string
+    description?: string
+    card_size?: number
+    free_space?: boolean
+  }) => post<Game>('/api/games', body),
+  setGameStatus: (id: string, status: string) => patch<Game>(`/api/games/${id}/status`, { status }),
+  resetGame: (id: string) => post<Game>(`/api/games/${id}/reset`),
+  deleteGame: (id: string) => del(`/api/games/${id}`),
+
+  // -------------------------------------------------------------- cards
+  myCard: (gameId: string) => get<Card>(`/api/games/${gameId}/card`),
+  buildCard: (gameId: string, wordIds: string[]) =>
+    post<Card>(`/api/games/${gameId}/card`, { word_ids: wordIds }),
+  gameCards: (gameId: string) => get<Card[]>(`/api/games/${gameId}/cards`),
+  leaderboard: (gameId: string) => get<LeaderboardEntry[]>(`/api/games/${gameId}/leaderboard`),
+  transcript: (gameId: string, limit = 120) =>
+    get<TranscriptToken[]>(`/api/games/${gameId}/transcript${qs({ limit })}`),
 
   // -------------------------------------------------------------- words
   words: (params: { include_inactive?: boolean; category?: string; search?: string } = {}) =>
     get<Word[]>(`/api/words${qs(params)}`),
   categories: () => get<string[]>('/api/words/categories'),
+  suggestWord: (text: string) => post<SuggestionResponse>('/api/words/suggest', { text }),
+  mySuggestions: () =>
+    get<{ suggestions: WordSuggestion[]; remaining: number; limit: number }>(
+      '/api/words/suggestions/mine',
+    ),
   createWord: (body: Partial<Word> & { text: string }) => post<Word>('/api/words', body),
   bulkWords: (body: { payload: string; category?: string; difficulty?: number }) =>
     post<Word[]>('/api/words/bulk', body),
@@ -138,31 +232,15 @@ export const api = {
       against?: { phrase: string; match_keys: string[]; matches: boolean }
     }>(`/api/words/inspect${qs({ phrase, against })}`),
 
-  // -------------------------------------------------------------- games
-  games: (status?: string) => get<Game[]>(`/api/games${qs({ status })}`),
-  game: (id: string) => get<Game>(`/api/games/${id}`),
-  createGame: (body: { name: string; description?: string; card_size?: number; free_space?: boolean }) =>
-    post<Game>('/api/games', body),
-  setGameStatus: (id: string, status: string) => patch<Game>(`/api/games/${id}/status`, { status }),
-  resetGame: (id: string) => post<Game>(`/api/games/${id}/reset`),
-  deleteGame: (id: string) => del(`/api/games/${id}`),
-
-  // -------------------------------------------------------------- cards
-  myCard: (gameId: string) => get<Card>(`/api/games/${gameId}/card`),
-  buildCard: (gameId: string, wordIds: string[]) =>
-    post<Card>(`/api/games/${gameId}/card`, { word_ids: wordIds }),
-  gameCards: (gameId: string) => get<Card[]>(`/api/games/${gameId}/cards`),
-  leaderboard: (gameId: string) => get<LeaderboardEntry[]>(`/api/games/${gameId}/leaderboard`),
-  transcript: (gameId: string, limit = 120) =>
-    get<TranscriptToken[]>(`/api/games/${gameId}/transcript${qs({ limit })}`),
-  bingos: (gameId: string) => get<BingoRecord[]>(`/api/games/${gameId}/bingos`),
-
   // -------------------------------------------------------------- admin
   stats: () => get<AdminStats>('/api/admin/stats'),
-  adminUsers: () => get<User[]>('/api/admin/users'),
-  updateUser: (id: string, body: { is_admin?: boolean; nickname?: string }) =>
-    patch<User>(`/api/admin/users/${id}`, body),
-  deleteUser: (id: string) => del(`/api/admin/users/${id}`),
+  players: (gameId?: string) =>
+    get<import('./types').Player[]>(`/api/admin/players${qs({ game_id: gameId })}`),
+  removePlayer: (id: string) => del(`/api/admin/players/${id}`),
+  suggestions: (status?: string) =>
+    get<WordSuggestion[]>(`/api/admin/suggestions${qs({ status })}`),
+  decideSuggestion: (id: string, approve: boolean, reason = '') =>
+    post<WordSuggestion>(`/api/admin/suggestions/${id}`, { approve, reason }),
   allCards: (gameId?: string) => get<Card[]>(`/api/admin/cards${qs({ game_id: gameId })}`),
   keys: () => get<ApiKey[]>('/api/admin/keys'),
   createKey: (name: string) => post<ApiKey>('/api/admin/keys', { name }),
@@ -171,7 +249,10 @@ export const api = {
 
   // -------------------------------------------------------------- ingest
   /** Admin test console — posts transcript through the same path a vendor would use. */
-  ingest: (body: { text: string; game_id?: string; speaker?: string; source?: string }, apiKey: string) =>
+  ingest: (
+    body: { text: string; game_id?: string; speaker?: string; source?: string },
+    apiKey: string,
+  ) =>
     request<{ token_count: number; results: unknown[] }>('/api/ingest', {
       method: 'POST',
       body: JSON.stringify(body),

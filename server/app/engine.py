@@ -74,7 +74,7 @@ class CellRef:
 
     cell_id: str
     card_id: str
-    user_id: str
+    player_id: str
     nickname: str
     position: int
     word_id: str
@@ -123,15 +123,15 @@ def build_index(game_id: str) -> GameIndex:
                c.card_id,
                c.position,
                c.word_id,
-               w.text        AS word_text,
-               w.aliases     AS aliases,
+               w.text         AS word_text,
+               w.aliases      AS aliases,
                w.strict_match AS strict_match,
-               cd.user_id    AS user_id,
-               u.nickname    AS nickname
+               cd.player_id   AS player_id,
+               p.nickname     AS nickname
         FROM card_cells c
-        JOIN cards cd ON cd.id = c.card_id
-        JOIN users u  ON u.id = cd.user_id
-        JOIN words w  ON w.id = c.word_id
+        JOIN cards cd   ON cd.id = c.card_id
+        JOIN players p  ON p.id = cd.player_id
+        JOIN words w    ON w.id = c.word_id
         WHERE cd.game_id = ? AND c.is_free = 0
         """,
         (game_id,),
@@ -144,7 +144,7 @@ def build_index(game_id: str) -> GameIndex:
         ref = CellRef(
             cell_id=row["cell_id"],
             card_id=row["card_id"],
-            user_id=row["user_id"],
+            player_id=row["player_id"],
             nickname=row["nickname"],
             position=row["position"],
             word_id=row["word_id"],
@@ -237,7 +237,7 @@ def generate_card_words(
     return layout
 
 
-def create_card(game: sqlite3.Row, user_id: str, word_ids: list[str] | None = None) -> str:
+def create_card(game: sqlite3.Row, player_id: str, word_ids: list[str] | None = None) -> str:
     """Create (or replace) a player's card for a game. Returns the card id."""
     card_size = game["card_size"]
     free_space = bool(game["free_space"])
@@ -254,8 +254,8 @@ def create_card(game: sqlite3.Row, user_id: str, word_ids: list[str] | None = No
 
     with transaction() as conn:
         existing = conn.execute(
-            "SELECT id, locked FROM cards WHERE game_id = ? AND user_id = ?",
-            (game["id"], user_id),
+            "SELECT id, locked FROM cards WHERE game_id = ? AND player_id = ?",
+            (game["id"], player_id),
         ).fetchone()
         if existing is not None:
             if existing["locked"]:
@@ -263,8 +263,9 @@ def create_card(game: sqlite3.Row, user_id: str, word_ids: list[str] | None = No
             conn.execute("DELETE FROM cards WHERE id = ?", (existing["id"],))
 
         conn.execute(
-            "INSERT INTO cards (id, game_id, user_id, created_at, locked) VALUES (?, ?, ?, ?, 0)",
-            (card_id, game["id"], user_id, now),
+            "INSERT INTO cards (id, game_id, player_id, created_at, locked)"
+            " VALUES (?, ?, ?, ?, 0)",
+            (card_id, game["id"], player_id, now),
         )
         conn.executemany(
             """
@@ -298,7 +299,7 @@ class TokenHit:
 
     cell_id: str
     card_id: str
-    user_id: str
+    player_id: str
     nickname: str
     position: int
     word_id: str
@@ -313,7 +314,7 @@ class BingoAward:
     id: str
     game_id: str
     card_id: str
-    user_id: str
+    player_id: str
     nickname: str
     pattern: str
     label: str
@@ -396,7 +397,7 @@ def apply_transcript(
                 TokenHit(
                     cell_id=ref.cell_id,
                     card_id=ref.card_id,
-                    user_id=ref.user_id,
+                    player_id=ref.player_id,
                     nickname=ref.nickname,
                     position=ref.position,
                     word_id=ref.word_id,
@@ -459,8 +460,8 @@ def _award_bingos(game: sqlite3.Row, card_id: str) -> list[BingoAward]:
 
     card = query_one(
         """
-        SELECT cd.id, cd.user_id, u.nickname
-        FROM cards cd JOIN users u ON u.id = cd.user_id
+        SELECT cd.id, cd.player_id, p.nickname
+        FROM cards cd JOIN players p ON p.id = cd.player_id
         WHERE cd.id = ?
         """,
         (card_id,),
@@ -481,14 +482,15 @@ def _award_bingos(game: sqlite3.Row, card_id: str) -> list[BingoAward]:
         bingo_id = new_id()
         execute(
             """
-            INSERT INTO bingos (id, game_id, card_id, user_id, pattern, cells, rank, achieved_at)
+            INSERT INTO bingos (id, game_id, card_id, player_id, pattern, cells, rank,
+                                achieved_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 bingo_id,
                 game["id"],
                 card_id,
-                card["user_id"],
+                card["player_id"],
                 pattern,
                 json.dumps(positions),
                 rank,
@@ -501,7 +503,7 @@ def _award_bingos(game: sqlite3.Row, card_id: str) -> list[BingoAward]:
                 id=bingo_id,
                 game_id=game["id"],
                 card_id=card_id,
-                user_id=card["user_id"],
+                player_id=card["player_id"],
                 nickname=card["nickname"],
                 pattern=pattern,
                 label=pattern_label(pattern),
@@ -526,17 +528,17 @@ def leaderboard(game_id: str) -> list[dict]:
     rows = query_all(
         """
         SELECT cd.id            AS card_id,
-               cd.user_id       AS user_id,
-               u.nickname       AS nickname,
-               u.avatar         AS avatar,
-               u.accent         AS accent,
+               cd.player_id     AS player_id,
+               p.nickname       AS nickname,
+               p.avatar         AS avatar,
+               p.accent         AS accent,
                COUNT(cc.id) FILTER (WHERE cc.marked = 1)  AS marked,
                COUNT(cc.id)                               AS total,
                (SELECT COUNT(*) FROM bingos b WHERE b.card_id = cd.id)      AS lines,
                (SELECT MIN(b.achieved_at) FROM bingos b WHERE b.card_id = cd.id) AS first_bingo_at,
                (SELECT MIN(b.rank) FROM bingos b WHERE b.card_id = cd.id)   AS best_rank
         FROM cards cd
-        JOIN users u ON u.id = cd.user_id
+        JOIN players p ON p.id = cd.player_id
         LEFT JOIN card_cells cc ON cc.card_id = cd.id
         WHERE cd.game_id = ?
         GROUP BY cd.id
@@ -547,7 +549,7 @@ def leaderboard(game_id: str) -> list[dict]:
     entries = [
         {
             "card_id": row["card_id"],
-            "user_id": row["user_id"],
+            "player_id": row["player_id"],
             "nickname": row["nickname"],
             "avatar": row["avatar"],
             "accent": row["accent"],

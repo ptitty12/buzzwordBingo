@@ -9,6 +9,9 @@ instantly, over WebSocket — and the first player to complete a line takes the 
 The matching engine understands inflection, so **"synergies" marks _synergy_**,
 **"leveraged" marks _leverage_**, and **"strategically" marks _strategic_**.
 
+No accounts, no passwords: players type a nickname to enter a game, and administrators
+authenticate with a PIN. Words can be proposed mid-game and are judged by Claude.
+
 ```
 ┌── transcription ──┐      ┌──────── FastAPI ────────┐      ┌──── React ────┐
 │  Zoom / Teams /   │ POST │  lexicon → match index  │  WS  │  live card    │
@@ -33,15 +36,16 @@ npm install
 npm run dev:web                          # http://localhost:5173
 ```
 
-On first boot the server seeds 135 buzzwords, an `admin` account, a demo game, and an
-ingest API key — **the key is printed to the log exactly once**:
+On first boot the server seeds 135 buzzwords, a demo game, and an ingest API key —
+**the key is printed to the log exactly once**:
 
 ```
 WARNING  bingo  INGEST API KEY (shown once): bb_xxxxxxxxxxxxxxxxxxxxxxxx
-WARNING  bingo  ADMIN_PIN is unset — the admin console is open to anyone.
+INFO     bingo  ANTHROPIC_API_KEY unset — player word suggestions will queue for admin review.
 ```
 
-Sign in as `admin`, open a game, hit **Start**, and feed it:
+Open `/#/admin`, enter the console PIN (`2165` out of the box — change it), start a game,
+and feed it:
 
 ```bash
 python -m app.scripts.simulate --game DEMO1 --api-key bb_xxx --wpm 160
@@ -130,7 +134,9 @@ building.
 with a monotonic sequence number, because "first to bingo" is only meaningful if tokens
 apply in the order they were spoken.
 
-Interactive reference: **`/api/docs`** (OpenAPI 3.1, generated from the Pydantic models).
+Interactive reference: **`/api/docs`** (OpenAPI 3.1, generated from the Pydantic models) —
+behind HTTP Basic, password = `ADMIN_PIN`. It is an operator surface, so it is not linked
+anywhere a player can see.
 
 ### Live event stream
 
@@ -155,28 +161,66 @@ REST stays the source of truth, so a client that misses an event recovers on rec
 
 ## Playing
 
-1. **Sign in** — pick a nickname from the dropdown or create one. No passwords, by design.
-2. **Draft a card** — search and filter the pool, pick as many squares as you like, and
+**There are no accounts.** The landing page lists the open games; picking one asks for a
+nickname, and that nickname *is* the player — scoped to that game, gone when the game is.
+Join two games and you are two players, free to be `SynergySlayer` in one and
+`Deck Chair Rearranger` in the other.
+
+1. **Pick a game** from the landing page. Anyone can watch the list; no sign-in screen.
+2. **Claim a nickname.** Unique within the game, free everywhere else. Your token is
+   remembered per game, so a refresh drops you back into the same seat.
+3. **Draft a card** — search and filter the pool, pick as many squares as you like, and
    anything you leave blank is auto-filled. "Surprise me" fills the whole card.
-3. **Wait for the meeting.** Squares light up as words are spoken. Cards lock when the
+4. **Wait for the meeting.** Squares light up as words are spoken. Cards lock when the
    game goes live so nobody rebuilds after hearing the first buzzword.
-4. **Bingo** — any row, column or diagonal. Four corners and blackout are tracked too.
+5. **Bingo** — any row, column or diagonal. Four corners and blackout are tracked too.
    Ranking is first-to-bingo, tie-broken on lines completed, then squares marked.
+
+### Proposing a word
+
+Players are not stuck with the shipped pool. **✦ Propose a word** submits a term to an
+LLM curator that decides, on the spot, whether it is genuine jargon:
+
+```
+✕ sales               "sales" is an ordinary business word, not jargon worth a square.
+✓ crosspollination    Genuine consultant-speak — earns a square.  → 'cross-pollination'
+✓ blamestorming       Genuine consultant-speak — earns a square.
+✕ the                 "the" is a function word, not a buzzword.
+```
+
+Approved words land in the shared pool immediately, filed under a category and a
+difficulty the model picked. The judge also normalises spelling — `crosspollination`
+enters the pool as *cross-pollination*, with the player's original spelling kept as an
+alias so the transcript matches either. Each player gets `SUGGESTIONS_PER_PLAYER`
+submissions per game (10 by default), and duplicates are caught before the model is
+called.
+
+Implementation: [`server/app/moderation.py`](server/app/moderation.py) — a single
+`claude-opus-5` call with a JSON-schema-constrained response. **Every failure path
+degrades to `pending`, never to approval**: no API key configured, a refusal, a network
+error, a malformed response — all of them route the word to the admin queue instead. The
+feature therefore works without an `ANTHROPIC_API_KEY`; it just becomes manual.
 
 ## Administering
 
-The admin console (`/#/admin`, admin accounts only) covers:
+Administrators have **no account** — the console PIN is the whole credential. `/#/admin`
+asks for it, exchanges it for a signed admin token, and that token unlocks everything
+below. Players never see the Admin link, and never see the API reference either: the
+integration surface is deliberately invisible to anyone playing.
 
-| Tab                | What it does                                                          |
-| ------------------ | --------------------------------------------------------------------- |
-| **Overview**       | fleet metrics, integration snippet, recent activity                    |
-| **Word pool**      | add / edit / bulk-import words, aliases, rarity, strict-match, disable |
-| **Games**          | create, start, pause, end, reset, delete                               |
-| **Cards**          | every player's card in every game, live                                |
-| **Transcript feed**| inject transcript through the real ingest endpoint                     |
-| **Players**        | promote / demote admins, rename, remove                                |
-| **API keys**       | mint and revoke ingest keys (hashed at rest, shown once)               |
-| **Audit log**      | every administrative mutation, with actor and timestamp                |
+| Tab                 | What it does                                                          |
+| ------------------- | --------------------------------------------------------------------- |
+| **Overview**        | fleet metrics, integration snippet, recent activity                    |
+| **Word pool**       | add / edit / bulk-import words, aliases, rarity, strict-match, disable |
+| **Suggestions**     | the moderation queue — approve or reject what the judge deferred       |
+| **Games**           | create, start, pause, end, reset, delete                               |
+| **Cards**           | every player's card in every game, live                                |
+| **Transcript feed** | inject transcript through the real ingest endpoint                     |
+| **Players**         | every nickname in every game, with rename and removal                  |
+| **API keys**        | mint and revoke ingest keys (hashed at rest, shown once)               |
+| **Audit log**       | every administrative mutation, with actor and timestamp                |
+
+**Only administrators create games.** Players join what exists; they cannot spin up rooms.
 
 Deleting a word that is already dealt onto a card **deactivates** it instead, so live
 games keep working.
@@ -187,30 +231,38 @@ games keep working.
 
 Copy `.env.example` to `.env`. Every value has a working default for local development.
 
-| Variable              | Default                 | Notes                                              |
-| --------------------- | ----------------------- | -------------------------------------------------- |
-| `SECRET_KEY`          | *generated per process* | **Set this in production** or sessions die on restart |
-| `DATABASE_URL`        | `server/data/bingo.db`  | SQLite path, or `:memory:`                          |
-| `ADMIN_PIN`           | *(empty)*               | Empty leaves the admin console open — see below     |
-| `INGEST_REQUIRE_KEY`  | `true`                  | Require `X-API-Key` on `/api/ingest`                |
-| `BOOTSTRAP_ADMINS`    | `admin`                 | Nicknames auto-granted admin on sign-up             |
-| `CORS_ORIGINS`        | `localhost:5173`        | Comma-separated browser origins                     |
-| `ENVIRONMENT`         | `development`           | `production` disables autoreload                    |
+| Variable                 | Default                 | Notes                                                 |
+| ------------------------ | ----------------------- | ----------------------------------------------------- |
+| `SECRET_KEY`             | *generated per process* | **Set this in production** or sessions die on restart  |
+| `DATABASE_URL`           | `server/data/bingo.db`  | SQLite path, or `:memory:`                             |
+| `ADMIN_PIN`              | `2165`                  | The admin credential. Empty **disables** the console   |
+| `PROTECT_API_DOCS`       | `true`                  | Gate `/api/docs` behind HTTP Basic using the PIN       |
+| `INGEST_REQUIRE_KEY`     | `true`                  | Require `X-API-Key` on `/api/ingest`                   |
+| `ANTHROPIC_API_KEY`      | *(empty)*               | Enables the word judge; unset ⇒ suggestions queue      |
+| `MODERATION_MODEL`       | `claude-opus-5`         | Model that judges proposed words                       |
+| `SUGGESTIONS_PER_PLAYER` | `10`                    | Word proposals allowed per player, per game            |
+| `CORS_ORIGINS`           | `localhost:5173`        | Comma-separated browser origins                        |
+| `ENVIRONMENT`            | `development`           | `production` disables autoreload                       |
+
+The API reference at `/api/docs` sits behind HTTP Basic with the admin PIN as the
+password (any username). Players who go looking find a 401, not the ingest contract.
 
 ### A note on the security model
 
-The brief called for password-free accounts, and that is what this implements: a session
-token is an **identity claim, not a secret**. It is HMAC-signed so a client cannot forge
-admin identity by editing `localStorage`, but anyone who can reach the server can sign in
-as anyone.
+The brief called for password-free play, and that is what this implements. There are two
+kinds of identity and they are not comparable:
 
-That is the right trade-off for a party game on a trusted network. It is not appropriate
-for the public internet. Two hardening levers ship with it:
+- **Players** hold a signed token naming a per-game player row. It is an **identity
+  claim, not a secret** — HMAC-signed so nobody can promote themselves by editing
+  `localStorage`, but anyone who can reach the server can claim any free nickname. That
+  is correct for a party game and wrong for the public internet.
+- **Administrators** hold a signed token minted only in exchange for `ADMIN_PIN`, which
+  is compared with `hmac.compare_digest`. There is no admin row to impersonate and no
+  password reset to phish. Leaving the PIN empty **denies every admin attempt** rather
+  than opening the console — the failure mode is locked out, not wide open.
 
-- **`ADMIN_PIN`** gates admin sign-in. While unset, the admin console displays an
-  explicit "unsecured" banner rather than pretending otherwise.
-- **Ingest API keys** are independent of user sessions, stored as SHA-256 hashes, and
-  revocable — so a transcription vendor never holds a player credential.
+Ingest API keys are independent of both, stored as SHA-256 hashes and revocable, so a
+transcription vendor never holds a player or admin credential.
 
 ---
 
@@ -218,7 +270,7 @@ for the public internet. Two hardening levers ship with it:
 
 ```bash
 npm run dev        # API (:8000) + Vite dev server (:5173) together
-npm test           # 142 backend tests
+npm test           # 173 backend tests
 npm run typecheck  # strict TypeScript, no emit
 cd server && .venv/bin/python -m ruff check app tests
 ```
@@ -229,15 +281,16 @@ cd server && .venv/bin/python -m ruff check app tests
 server/app/
   lexicon.py      normalisation, stemming, match keys      ← the interesting bit
   engine.py       card geometry, match index, ingest, win detection
+  moderation.py   the LLM buzzword judge (fails closed to the admin queue)
   realtime.py     WebSocket fan-out
-  security.py     signed sessions, API keys, dependencies
+  security.py     PIN check, signed admin/player tokens, API keys, dependencies
   models.py       Pydantic contracts (these become the OpenAPI schema)
   routers/        auth · words · games · ingest · admin · stream
   seed.py         idempotent starter pool + demo game
 web/src/
   lib/            typed API client, hooks (routing, sockets, async)
-  components/     design-system primitives, bingo grid, ticker, leaderboard
-  views/          Login · Lobby · Game (play + draft) · Admin
+  components/     design-system primitives, bingo grid, ticker, word proposals
+  views/          Landing · Join · Game (play + draft) · AdminGate · Admin
 ```
 
 ### Testing
@@ -248,9 +301,13 @@ The suite covers the layers most likely to break in embarrassing ways:
   forms match their base; and a false-positive guard pins pairs that must *never*
   collide (`synergy` ≠ `energy`, `pivot` ≠ `private`, `deep dive` ≠ `deep`).
 - **`test_engine.py`** — card geometry and the 14 winning patterns.
-- **`test_api.py`** — the full lifecycle end to end, plus authorization boundaries
-  (players cannot add words, create games, read another player's card, or reach admin
-  routes) and the phrase-across-multiple-calls behaviour that live captioning depends on.
+- **`test_moderation.py`** — the judge with a stubbed model: approvals, rejections,
+  canonical-spelling rewrites, and every fallback (no key, refusal, network error,
+  malformed JSON) landing on `pending` rather than a silent approval.
+- **`test_api.py`** — the full lifecycle end to end, plus authorization boundaries (a
+  wrong PIN is refused; players cannot create games, add words directly, read another
+  player's card, cross games with one token, or reach admin routes) and the
+  phrase-across-multiple-calls behaviour that live captioning depends on.
 
 ### Docker
 

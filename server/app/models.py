@@ -21,28 +21,21 @@ class ORMModel(BaseModel):
 # --------------------------------------------------------------------------- auth
 
 
-class UserPublic(ORMModel):
+class PlayerPublic(ORMModel):
+    """A player, scoped to the single game they joined."""
+
     id: str
+    game_id: str
     nickname: str
     avatar: str = ""
     accent: str = "green"
-    is_admin: bool = False
     created_at: str
     last_seen_at: str | None = None
 
 
-class UserSummary(ORMModel):
-    """Shape used by the sign-in dropdown — deliberately free of anything sensitive."""
+class JoinRequest(BaseModel):
+    """Everything needed to enter a game — a nickname, and nothing else required."""
 
-    id: str
-    nickname: str
-    avatar: str = ""
-    accent: str = "green"
-    is_admin: bool = False
-    games_played: int = 0
-
-
-class SignUpRequest(BaseModel):
     nickname: str = Field(min_length=2, max_length=24)
     avatar: str = Field(default="", max_length=8)
     accent: str = "green"
@@ -61,14 +54,28 @@ class SignUpRequest(BaseModel):
         return value if value in ACCENTS else "green"
 
 
-class SignInRequest(BaseModel):
-    user_id: str
-    admin_pin: str = ""
+class AdminSignIn(BaseModel):
+    pin: str = Field(min_length=1, max_length=32)
 
 
-class Session(BaseModel):
+class PlayerSession(BaseModel):
+    """Issued on join: a token scoped to one game, plus the player it identifies."""
+
     token: str
-    user: UserPublic
+    player: PlayerPublic
+    game_id: str
+
+
+class AdminSession(BaseModel):
+    token: str
+    is_admin: bool = True
+
+
+class Identity(BaseModel):
+    """Who the caller is, as the frontend sees it."""
+
+    is_admin: bool = False
+    player: PlayerPublic | None = None
 
 
 # --------------------------------------------------------------------------- words
@@ -83,6 +90,8 @@ class WordPublic(ORMModel):
     strict_match: bool = False
     active: bool = True
     created_at: str
+    created_by: str = "admin"
+    source: str = "admin"
     usage_count: int = 0
 
 
@@ -179,7 +188,7 @@ class CardCell(BaseModel):
 class CardPublic(BaseModel):
     id: str
     game_id: str
-    user_id: str
+    player_id: str
     nickname: str
     avatar: str = ""
     accent: str = "green"
@@ -219,7 +228,7 @@ class IngestRequest(BaseModel):
 
 
 class IngestHit(BaseModel):
-    user_id: str
+    player_id: str
     nickname: str
     card_id: str
     position: int
@@ -228,7 +237,7 @@ class IngestHit(BaseModel):
 
 
 class IngestBingo(BaseModel):
-    user_id: str
+    player_id: str
     nickname: str
     pattern: str
     label: str
@@ -266,7 +275,7 @@ class TranscriptToken(ORMModel):
 
 class LeaderboardEntry(BaseModel):
     position: int
-    user_id: str
+    player_id: str
     card_id: str
     nickname: str
     avatar: str = ""
@@ -310,8 +319,7 @@ class AuditEntry(ORMModel):
 
 
 class AdminStats(BaseModel):
-    users: int
-    admins: int
+    players: int
     words: int
     active_words: int
     games: int
@@ -320,10 +328,54 @@ class AdminStats(BaseModel):
     tokens: int
     bingos: int
     connected_sockets: int
-    admin_pin_set: bool
+    pending_suggestions: int
+    moderation_enabled: bool
+    moderation_model: str
     environment: str
 
 
-class UserAdminUpdate(BaseModel):
-    is_admin: bool | None = None
-    nickname: str | None = Field(default=None, min_length=2, max_length=24)
+# --------------------------------------------------------------------------- suggestions
+
+
+class WordSuggestionRequest(BaseModel):
+    """A player proposing a new buzzword for the pool."""
+
+    text: str = Field(min_length=2, max_length=48)
+
+    @field_validator("text")
+    @classmethod
+    def clean_text(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("Say something.")
+        return cleaned
+
+
+class WordSuggestionPublic(ORMModel):
+    id: str
+    text: str
+    canonical: str = ""
+    status: str
+    verdict: str = ""
+    category: str = ""
+    difficulty: int = 2
+    judged_by: str = ""
+    player_name: str = ""
+    word_id: str | None = None
+    created_at: str
+    decided_at: str | None = None
+
+
+class SuggestionResponse(BaseModel):
+    """What the player sees immediately after submitting."""
+
+    suggestion: WordSuggestionPublic
+    word: WordPublic | None = None
+    remaining: int = 0
+
+
+class SuggestionDecision(BaseModel):
+    """An admin overriding (or standing in for) the judge."""
+
+    approve: bool
+    reason: str = Field(default="", max_length=280)

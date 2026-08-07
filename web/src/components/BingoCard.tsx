@@ -133,7 +133,7 @@ export function Leaderboard({
         const percent = entry.total > 0 ? Math.round((entry.marked / entry.total) * 100) : 0
         const champion = entry.best_rank === 1
         const classes = ['lb-row']
-        if (entry.user_id === meId) classes.push('is-me')
+        if (entry.player_id === meId) classes.push('is-me')
         if (champion) classes.push('champion')
 
         return (

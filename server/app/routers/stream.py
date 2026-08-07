@@ -9,7 +9,7 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from ..db import query_one
 from ..engine import leaderboard
 from ..realtime import hub
-from ..security import verify_token
+from ..security import ADMIN_SUBJECT, PLAYER_PREFIX, verify_token
 from ..serializers import GAME_SELECT, game_public
 
 router = APIRouter(tags=["realtime"])
@@ -31,12 +31,15 @@ async def game_stream(
         return
 
     nickname = "spectator"
-    if token:
-        user_id = verify_token(token)
-        if user_id:
-            user = query_one("SELECT nickname FROM users WHERE id = ?", (user_id,))
-            if user:
-                nickname = user["nickname"]
+    subject = verify_token(token) if token else None
+    if subject == ADMIN_SUBJECT:
+        nickname = "admin"
+    elif subject and subject.startswith(PLAYER_PREFIX):
+        player = query_one(
+            "SELECT nickname FROM players WHERE id = ?", (subject[len(PLAYER_PREFIX):],)
+        )
+        if player:
+            nickname = player["nickname"]
 
     await hub.connect(game["id"], websocket, nickname)
     try:

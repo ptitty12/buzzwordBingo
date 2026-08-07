@@ -7,16 +7,23 @@ import sqlite3
 
 from .db import query_all, query_one
 from .engine import _parse_aliases
-from .models import CardCell, CardPublic, GamePublic, UserPublic, WordPublic
+from .models import (
+    CardCell,
+    CardPublic,
+    GamePublic,
+    PlayerPublic,
+    WordPublic,
+    WordSuggestionPublic,
+)
 
 
-def user_public(row: sqlite3.Row) -> UserPublic:
-    return UserPublic(
+def player_public(row: sqlite3.Row) -> PlayerPublic:
+    return PlayerPublic(
         id=row["id"],
+        game_id=row["game_id"],
         nickname=row["nickname"],
         avatar=row["avatar"],
         accent=row["accent"],
-        is_admin=bool(row["is_admin"]),
         created_at=row["created_at"],
         last_seen_at=row["last_seen_at"],
     )
@@ -33,7 +40,26 @@ def word_public(row: sqlite3.Row) -> WordPublic:
         strict_match=bool(row["strict_match"]),
         active=bool(row["active"]),
         created_at=row["created_at"],
+        created_by=row["created_by"] if "created_by" in keys else "admin",
+        source=row["source"] if "source" in keys else "admin",
         usage_count=row["usage_count"] if "usage_count" in keys else 0,
+    )
+
+
+def suggestion_public(row: sqlite3.Row) -> WordSuggestionPublic:
+    return WordSuggestionPublic(
+        id=row["id"],
+        text=row["text"],
+        canonical=row["canonical"],
+        status=row["status"],
+        verdict=row["verdict"],
+        category=row["category"],
+        difficulty=row["difficulty"],
+        judged_by=row["judged_by"],
+        player_name=row["player_name"],
+        word_id=row["word_id"],
+        created_at=row["created_at"],
+        decided_at=row["decided_at"],
     )
 
 
@@ -69,10 +95,10 @@ def card_public(card_id: str) -> CardPublic | None:
     """Hydrate a full card — cells, words, marks and any lines already completed."""
     card = query_one(
         """
-        SELECT cd.*, g.card_size, u.nickname, u.avatar, u.accent
+        SELECT cd.*, g.card_size, p.nickname, p.avatar, p.accent
         FROM cards cd
-        JOIN games g ON g.id = cd.game_id
-        JOIN users u ON u.id = cd.user_id
+        JOIN games g   ON g.id = cd.game_id
+        JOIN players p ON p.id = cd.player_id
         WHERE cd.id = ?
         """,
         (card_id,),
@@ -112,7 +138,7 @@ def card_public(card_id: str) -> CardPublic | None:
     return CardPublic(
         id=card["id"],
         game_id=card["game_id"],
-        user_id=card["user_id"],
+        player_id=card["player_id"],
         nickname=card["nickname"],
         avatar=card["avatar"],
         accent=card["accent"],

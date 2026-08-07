@@ -1,4 +1,4 @@
-"""Test fixtures: an isolated database and an authenticated API client per test."""
+"""Test fixtures: an isolated database and callers for each role."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ _TMPDIR = tempfile.mkdtemp(prefix="bingo-tests-")
 os.environ["DATABASE_URL"] = str(Path(_TMPDIR) / "test.db")
 os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
 os.environ["ENVIRONMENT"] = "test"
-os.environ["ADMIN_PIN"] = ""
+os.environ["ADMIN_PIN"] = "2165"
 os.environ["INGEST_REQUIRE_KEY"] = "false"
-os.environ["BOOTSTRAP_ADMINS"] = "admin"
+os.environ["ANTHROPIC_API_KEY"] = ""  # moderation off by default; tests stub the judge
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -24,7 +24,8 @@ from app import db  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.engine import invalidate_all_indexes  # noqa: E402
 from app.main import create_app  # noqa: E402
-from app.seed import run_seed  # noqa: E402
+
+ADMIN_PIN = "2165"
 
 
 @pytest.fixture(autouse=True)
@@ -42,39 +43,42 @@ def fresh_database(tmp_path: Path) -> Iterator[None]:
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
-    """A TestClient whose lifespan seeds the pool, admin account and demo game."""
+    """A TestClient whose lifespan seeds the word pool, demo game and ingest key."""
     with TestClient(create_app()) as test_client:
         yield test_client
 
 
 @pytest.fixture
-def admin_token(client: TestClient) -> str:
-    """Session token for the seeded bootstrap admin."""
-    users = client.get("/api/auth/users").json()
-    admin = next(u for u in users if u["is_admin"])
-    response = client.post("/api/auth/signin", json={"user_id": admin["id"]})
+def admin_headers(client: TestClient) -> dict[str, str]:
+    """Admin token, obtained the only way there is — with the PIN."""
+    response = client.post("/api/auth/admin", json={"pin": ADMIN_PIN})
     assert response.status_code == 200, response.text
-    return response.json()["token"]
+    return {"Authorization": f"Bearer {response.json()['token']}"}
 
 
-@pytest.fixture
-def admin_headers(admin_token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {admin_token}"}
+def create_game(client: TestClient, admin_headers: dict, name: str = "Test Game") -> dict:
+    response = client.post("/api/games", json={"name": name}, headers=admin_headers)
+    assert response.status_code == 201, response.text
+    return response.json()
 
 
-@pytest.fixture
-def seeded(client: TestClient) -> dict:
-    """Re-run the seed and hand back its summary (words, admin id, demo game)."""
-    return run_seed()
-
-
-def make_player(client: TestClient, nickname: str) -> dict:
-    """Create a player account and return ``{'token', 'user', 'headers'}``."""
-    response = client.post("/api/auth/signup", json={"nickname": nickname})
+def join(client: TestClient, game_id: str, nickname: str) -> dict:
+    """Join a game with a nickname and return ``{'token', 'player', 'headers'}``."""
+    response = client.post(f"/api/games/{game_id}/join", json={"nickname": nickname})
     assert response.status_code == 201, response.text
     body = response.json()
     return {
         "token": body["token"],
-        "user": body["user"],
+        "player": body["player"],
         "headers": {"Authorization": f"Bearer {body['token']}"},
     }
+
+
+def build_card(client: TestClient, game_id: str, player: dict, word_ids=None) -> dict:
+    response = client.post(
+        f"/api/games/{game_id}/card",
+        json={"word_ids": word_ids or []},
+        headers=player["headers"],
+    )
+    assert response.status_code == 201, response.text
+    return response.json()

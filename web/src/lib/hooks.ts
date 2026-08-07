@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { getToken } from './api'
+import { currentToken } from './api'
 import type { GameEvent } from './types'
 
 /* ------------------------------------------------------------------ routing */
@@ -64,7 +64,7 @@ export function useGameSocket(gameId: string | null, onEvent: (event: GameEvent)
       setStatus('connecting')
 
       const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      const token = getToken() ?? ''
+      const token = currentToken() ?? ''
       const url = `${protocol}://${window.location.host}/ws/games/${gameId}?token=${encodeURIComponent(token)}`
 
       socket = new WebSocket(url)

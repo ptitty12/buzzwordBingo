@@ -10,7 +10,7 @@ import { useMemo, useState } from 'react'
 
 import { api } from '../lib/api'
 import { useAsync, useDebounced } from '../lib/hooks'
-import { useSession, useToast } from '../lib/store'
+import { useToast } from '../lib/store'
 import { BingoGrid } from '../components/BingoCard'
 import {
   Avatar,
@@ -28,11 +28,21 @@ import {
 } from '../components/ui'
 import type { ApiKey, Word } from '../lib/types'
 
-type Tab = 'overview' | 'words' | 'games' | 'cards' | 'feed' | 'players' | 'keys' | 'audit'
+type Tab =
+  | 'overview'
+  | 'words'
+  | 'suggestions'
+  | 'games'
+  | 'cards'
+  | 'feed'
+  | 'players'
+  | 'keys'
+  | 'audit'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'words', label: 'Word pool' },
+  { id: 'suggestions', label: 'Suggestions' },
   { id: 'games', label: 'Games' },
   { id: 'cards', label: 'Cards' },
   { id: 'feed', label: 'Transcript feed' },
@@ -67,6 +77,7 @@ export function Admin({ navigate }: { navigate: (path: string) => void }) {
 
       {tab === 'overview' && <Overview />}
       {tab === 'words' && <WordPool />}
+      {tab === 'suggestions' && <Suggestions />}
       {tab === 'games' && <Games navigate={navigate} />}
       {tab === 'cards' && <AllCards />}
       {tab === 'feed' && <Feed />}
@@ -91,25 +102,35 @@ function Overview() {
 
   return (
     <div className="col gap-16">
-      {!s.admin_pin_set && (
+      {!s.moderation_enabled && (
         <div className="banner">
           <span>⚠</span>
           <div>
-            <strong>Admin console is unsecured.</strong> Any account flagged as admin can sign in
-            without a challenge. Set <code className="mono">ADMIN_PIN</code> in the environment to
-            require a PIN.
+            <strong>Word judge is offline.</strong> No{' '}
+            <code className="mono">ANTHROPIC_API_KEY</code> is configured, so player word
+            suggestions queue for your review instead of being decided automatically.
           </div>
         </div>
       )}
 
       <div className="stat-grid">
-        <Stat value={s.users} label="Players" hint={`${s.admins} admin${s.admins === 1 ? '' : 's'}`} />
-        <Stat value={s.active_words} label="Active words" hint={`${s.words} total in pool`} accent="violet" />
+        <Stat value={s.players} label="Players" hint="across all games" />
+        <Stat
+          value={s.active_words}
+          label="Active words"
+          hint={`${s.words} total in pool`}
+          accent="violet"
+        />
         <Stat value={s.live_games} label="Live games" hint={`${s.games} all time`} accent="lime" />
         <Stat value={s.cards} label="Cards dealt" accent="sky" />
         <Stat value={s.tokens.toLocaleString()} label="Words heard" accent="amber" />
         <Stat value={s.bingos} label="Bingos" accent="rose" />
-        <Stat value={s.connected_sockets} label="Live sockets" hint="WebSocket viewers" />
+        <Stat
+          value={s.pending_suggestions}
+          label="Pending words"
+          hint={s.moderation_enabled ? s.moderation_model : 'judge offline'}
+          accent="teal"
+        />
         <Stat value={s.environment} label="Environment" />
       </div>
 
@@ -875,78 +896,207 @@ function Feed() {
 /* ------------------------------------------------------------------ players */
 
 function Players() {
-  const { user } = useSession()
   const { push } = useToast()
-  const users = useAsync(() => api.adminUsers(), [])
+  const [gameId, setGameId] = useState('')
+  const games = useAsync(() => api.games(), [])
+  const players = useAsync(() => api.players(gameId || undefined), [gameId])
 
-  const act = async (label: string, action: () => Promise<unknown>) => {
+  const gameName = (id: string) => games.data?.find((g) => g.id === id)?.name ?? '—'
+
+  const remove = async (id: string, nickname: string) => {
+    if (!confirm(`Remove "${nickname}" and their card from this game?`)) return
     try {
-      await action()
-      push({ kind: 'success', title: label })
-      users.reload()
+      await api.removePlayer(id)
+      push({ kind: 'success', title: `${nickname} removed` })
+      players.reload()
+    } catch (err) {
+      push({ kind: 'error', title: err instanceof Error ? err.message : 'Remove failed.' })
+    }
+  }
+
+  return (
+    <div className="col gap-16">
+      <div className="row gap-8 wrap">
+        <select
+          className="select"
+          style={{ width: 'auto', minWidth: 230 }}
+          value={gameId}
+          onChange={(event) => setGameId(event.target.value)}
+        >
+          <option value="">All games</option>
+          {(games.data ?? []).map((game) => (
+            <option key={game.id} value={game.id}>{game.name} ({game.code})</option>
+          ))}
+        </select>
+        <span className="faint" style={{ fontSize: 12.5, alignSelf: 'center' }}>
+          Players exist only inside the game they joined — there are no accounts.
+        </span>
+      </div>
+
+      <Panel title={`${players.data?.length ?? 0} players`} flush>
+        {players.loading && <Spinner />}
+        {players.error && <div style={{ padding: 16 }}><ErrorNote message={players.error} /></div>}
+        {players.data && players.data.length === 0 && (
+          <Empty icon="◌" title="Nobody has joined yet" />
+        )}
+        {players.data && players.data.length > 0 && (
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr><th>Nickname</th><th>Game</th><th>Joined</th><th>Last seen</th><th /></tr>
+              </thead>
+              <tbody>
+                {players.data.map((entry) => (
+                  <tr key={entry.id}>
+                    <td>
+                      <div className="row gap-8">
+                        <Avatar user={entry} size="sm" />
+                        <span style={{ fontWeight: 570 }}>{entry.nickname}</span>
+                      </div>
+                    </td>
+                    <td className="dim">{gameName(entry.game_id)}</td>
+                    <td className="faint" style={{ fontSize: 12 }}>{relativeTime(entry.created_at)}</td>
+                    <td className="faint" style={{ fontSize: 12 }}>{relativeTime(entry.last_seen_at)}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => remove(entry.id, entry.nickname)}
+                      >✕</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ suggestions */
+
+/**
+ * Player word submissions and what the judge made of them. Every verdict is
+ * overridable — the model curates, the admin decides.
+ */
+function Suggestions() {
+  const { push } = useToast()
+  const [filter, setFilter] = useState('')
+  const suggestions = useAsync(() => api.suggestions(filter || undefined), [filter])
+  const stats = useAsync(() => api.stats(), [])
+
+  const decide = async (id: string, approve: boolean, text: string) => {
+    try {
+      await api.decideSuggestion(id, approve)
+      push({
+        kind: 'success',
+        title: approve ? `"${text}" added to the pool` : `"${text}" rejected`,
+      })
+      suggestions.reload()
+      stats.reload()
     } catch (err) {
       push({ kind: 'error', title: err instanceof Error ? err.message : 'Action failed.' })
     }
   }
 
-  if (users.loading) return <Spinner />
-  if (users.error) return <ErrorNote message={users.error} />
+  const tone = (status: string) =>
+    status === 'approved' ? 'live' : status === 'rejected' ? 'danger' : 'paused'
 
   return (
-    <Panel title={`${users.data?.length ?? 0} players`} flush>
-      <div className="table-scroll">
-        <table className="table">
-          <thead>
-            <tr><th>Player</th><th>Role</th><th>Joined</th><th>Last seen</th><th /></tr>
-          </thead>
-          <tbody>
-            {(users.data ?? []).map((entry) => (
-              <tr key={entry.id}>
-                <td>
-                  <div className="row gap-8">
-                    <Avatar user={entry} size="sm" />
-                    <span style={{ fontWeight: 570 }}>{entry.nickname}</span>
-                    {entry.id === user?.id && <span className="badge badge-accent">you</span>}
-                  </div>
-                </td>
-                <td>
-                  <span className={`badge${entry.is_admin ? ' badge-accent' : ''}`}>
-                    {entry.is_admin ? 'admin' : 'player'}
-                  </span>
-                </td>
-                <td className="faint" style={{ fontSize: 12 }}>{relativeTime(entry.created_at)}</td>
-                <td className="faint" style={{ fontSize: 12 }}>{relativeTime(entry.last_seen_at)}</td>
-                <td>
-                  <div className="row gap-4" style={{ justifyContent: 'flex-end' }}>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      onClick={() =>
-                        act(
-                          entry.is_admin ? 'Admin revoked' : 'Promoted to admin',
-                          () => api.updateUser(entry.id, { is_admin: !entry.is_admin }),
-                        )
-                      }
-                    >
-                      {entry.is_admin ? 'Demote' : 'Promote'}
-                    </button>
-                    {entry.id !== user?.id && (
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => {
-                          if (confirm(`Delete "${entry.nickname}" and all of their cards?`)) {
-                            act('Player deleted', () => api.deleteUser(entry.id))
-                          }
-                        }}
-                      >✕</button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="col gap-16">
+      <div className="row-between wrap gap-12">
+        <div className="row gap-6">
+          {['', 'pending', 'approved', 'rejected'].map((value) => (
+            <button
+              key={value || 'all'}
+              className={`btn btn-sm${filter === value ? ' btn-primary' : ''}`}
+              onClick={() => setFilter(value)}
+            >
+              {value || 'All'}
+            </button>
+          ))}
+        </div>
+        {stats.data && (
+          <span className="faint" style={{ fontSize: 12.5 }}>
+            {stats.data.moderation_enabled
+              ? `Judged by ${stats.data.moderation_model}`
+              : 'Judge offline — everything queues for manual review'}
+          </span>
+        )}
       </div>
-    </Panel>
+
+      <Panel
+        title={`${suggestions.data?.length ?? 0} submissions`}
+        subtitle="Players propose words; the AI curator decides whether they are buzzwordy enough"
+        flush
+      >
+        {suggestions.loading && <Spinner />}
+        {suggestions.error && (
+          <div style={{ padding: 16 }}><ErrorNote message={suggestions.error} /></div>
+        )}
+        {suggestions.data && suggestions.data.length === 0 && (
+          <Empty icon="✦" title="No submissions yet">
+            Players can propose words from inside a game.
+          </Empty>
+        )}
+        {suggestions.data && suggestions.data.length > 0 && (
+          <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Word</th><th>Player</th><th>Verdict</th>
+                  <th>Judge</th><th>When</th><th>Status</th><th />
+                </tr>
+              </thead>
+              <tbody>
+                {suggestions.data.map((entry) => (
+                  <tr key={entry.id}>
+                    <td style={{ fontWeight: 570 }}>
+                      {entry.canonical || entry.text}
+                      {entry.canonical && entry.canonical !== entry.text && (
+                        <div className="faint" style={{ fontSize: 11 }}>
+                          submitted as “{entry.text}”
+                        </div>
+                      )}
+                    </td>
+                    <td className="dim">{entry.player_name || '—'}</td>
+                    <td className="dim" style={{ fontSize: 12.5, maxWidth: 280 }}>
+                      {entry.verdict || '—'}
+                    </td>
+                    <td className="faint mono" style={{ fontSize: 11 }}>
+                      {entry.judged_by || '—'}
+                    </td>
+                    <td className="faint" style={{ fontSize: 12 }}>
+                      {relativeTime(entry.created_at)}
+                    </td>
+                    <td>
+                      <span className={`badge badge-${tone(entry.status)}`}>{entry.status}</span>
+                    </td>
+                    <td>
+                      <div className="row gap-4" style={{ justifyContent: 'flex-end' }}>
+                        {entry.status !== 'approved' && (
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => decide(entry.id, true, entry.canonical || entry.text)}
+                          >Approve</button>
+                        )}
+                        {entry.status !== 'rejected' && (
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => decide(entry.id, false, entry.canonical || entry.text)}
+                          >Reject</button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
   )
 }
 

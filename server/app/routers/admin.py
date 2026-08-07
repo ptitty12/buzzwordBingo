@@ -1,13 +1,15 @@
-"""Admin console API: fleet stats, user management, API keys and the audit trail."""
+"""Admin console API: fleet stats, players, suggestions, API keys and the audit trail."""
 
 from __future__ import annotations
 
-import sqlite3
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..config import get_settings
 from ..db import execute, new_id, query_all, query_one, record_audit, utcnow
+from ..engine import invalidate_all_indexes
+from ..lexicon import exact_key
 from ..models import (
     AdminStats,
     ApiKeyCreate,
@@ -15,12 +17,13 @@ from ..models import (
     ApiKeyPublic,
     AuditEntry,
     CardPublic,
-    UserAdminUpdate,
-    UserPublic,
+    PlayerPublic,
+    SuggestionDecision,
+    WordSuggestionPublic,
 )
 from ..realtime import hub
-from ..security import generate_api_key, require_admin
-from ..serializers import card_public, user_public
+from ..security import Identity, generate_api_key, require_admin
+from ..serializers import card_public, player_public, suggestion_public
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -31,12 +34,11 @@ def _count(sql: str, params: tuple = ()) -> int:
 
 
 @router.get("/stats", response_model=AdminStats)
-def stats(_admin: sqlite3.Row = Depends(require_admin)) -> AdminStats:
+def stats(_admin: Identity = Depends(require_admin)) -> AdminStats:
     """Headline numbers for the admin overview."""
     settings = get_settings()
     return AdminStats(
-        users=_count("SELECT COUNT(*) AS n FROM users"),
-        admins=_count("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1"),
+        players=_count("SELECT COUNT(*) AS n FROM players"),
         words=_count("SELECT COUNT(*) AS n FROM words"),
         active_words=_count("SELECT COUNT(*) AS n FROM words WHERE active = 1"),
         games=_count("SELECT COUNT(*) AS n FROM games"),
@@ -45,92 +47,149 @@ def stats(_admin: sqlite3.Row = Depends(require_admin)) -> AdminStats:
         tokens=_count("SELECT COUNT(*) AS n FROM transcript_tokens"),
         bingos=_count("SELECT COUNT(*) AS n FROM bingos"),
         connected_sockets=sum(hub.presence().values()),
-        admin_pin_set=bool(settings.admin_pin),
+        pending_suggestions=_count(
+            "SELECT COUNT(*) AS n FROM word_suggestions WHERE status = 'pending'"
+        ),
+        moderation_enabled=settings.moderation_enabled,
+        moderation_model=settings.moderation_model if settings.moderation_enabled else "",
         environment=settings.environment,
     )
 
 
-@router.get("/users", response_model=list[UserPublic])
-def list_users(_admin: sqlite3.Row = Depends(require_admin)) -> list[UserPublic]:
-    rows = query_all("SELECT * FROM users ORDER BY created_at DESC")
-    return [user_public(row) for row in rows]
+# --------------------------------------------------------------------------- players
 
 
-@router.patch("/users/{user_id}", response_model=UserPublic)
-def update_user(
-    user_id: str, payload: UserAdminUpdate, admin: sqlite3.Row = Depends(require_admin)
-) -> UserPublic:
-    """Promote/demote an admin or rename a player."""
-    target = query_one("SELECT * FROM users WHERE id = ?", (user_id,))
+@router.get("/players", response_model=list[PlayerPublic])
+def list_players(
+    game_id: str | None = Query(default=None),
+    _admin: Identity = Depends(require_admin),
+) -> list[PlayerPublic]:
+    """Everyone who has joined a game, optionally scoped to one game."""
+    where = "WHERE game_id = ?" if game_id else ""
+    params = (game_id,) if game_id else ()
+    rows = query_all(f"SELECT * FROM players {where} ORDER BY created_at DESC", params)
+    return [player_public(row) for row in rows]
+
+
+@router.delete("/players/{player_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_player(player_id: str, _admin: Identity = Depends(require_admin)) -> None:
+    """Remove a player and their card from a game."""
+    target = query_one("SELECT * FROM players WHERE id = ?", (player_id,))
     if target is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
-
-    fields = payload.model_dump(exclude_unset=True)
-    if payload.is_admin is False and target["is_admin"]:
-        remaining = _count(
-            "SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND id != ?", (user_id,)
-        )
-        if remaining == 0:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Cannot demote the last remaining administrator.",
-            )
-
-    assignments, params = [], []
-    if "is_admin" in fields:
-        assignments.append("is_admin = ?")
-        params.append(int(bool(payload.is_admin)))
-    if "nickname" in fields and payload.nickname:
-        key = payload.nickname.lower()
-        clash = query_one(
-            "SELECT id FROM users WHERE nickname_key = ? AND id != ?", (key, user_id)
-        )
-        if clash:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Nickname taken.")
-        assignments += ["nickname = ?", "nickname_key = ?"]
-        params += [payload.nickname, key]
-
-    if assignments:
-        params.append(user_id)
-        execute(f"UPDATE users SET {', '.join(assignments)} WHERE id = ?", tuple(params))
-        record_audit(
-            "user.updated",
-            actor_id=admin["id"],
-            actor_name=admin["nickname"],
-            entity="user",
-            entity_id=user_id,
-            detail=", ".join(fields.keys()),
-        )
-
-    updated = query_one("SELECT * FROM users WHERE id = ?", (user_id,))
-    assert updated is not None
-    return user_public(updated)
-
-
-@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_user(user_id: str, admin: sqlite3.Row = Depends(require_admin)) -> None:
-    target = query_one("SELECT * FROM users WHERE id = ?", (user_id,))
-    if target is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
-    if target["id"] == admin["id"]:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="You cannot delete your own account."
-        )
-    execute("DELETE FROM users WHERE id = ?", (user_id,))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found.")
+    execute("DELETE FROM players WHERE id = ?", (player_id,))
+    invalidate_all_indexes()
     record_audit(
-        "user.deleted",
-        actor_id=admin["id"],
-        actor_name=admin["nickname"],
-        entity="user",
-        entity_id=user_id,
+        "player.removed",
+        actor_name="admin",
+        entity="player",
+        entity_id=player_id,
         detail=target["nickname"],
     )
+
+
+# --------------------------------------------------------------------------- suggestions
+
+
+@router.get("/suggestions", response_model=list[WordSuggestionPublic])
+def list_suggestions(
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    _admin: Identity = Depends(require_admin),
+) -> list[WordSuggestionPublic]:
+    """Player word submissions and the judge's verdicts."""
+    where = "WHERE status = ?" if status_filter else ""
+    params: tuple = (status_filter, limit) if status_filter else (limit,)
+    rows = query_all(
+        f"SELECT * FROM word_suggestions {where} ORDER BY created_at DESC LIMIT ?", params
+    )
+    return [suggestion_public(row) for row in rows]
+
+
+@router.post("/suggestions/{suggestion_id}", response_model=WordSuggestionPublic)
+def decide_suggestion(
+    suggestion_id: str,
+    payload: SuggestionDecision,
+    _admin: Identity = Depends(require_admin),
+) -> WordSuggestionPublic:
+    """Approve or reject a suggestion by hand — the override for the judge's call.
+
+    Approving adds the word to the live pool; rejecting an already-approved suggestion
+    deactivates the word it created rather than deleting it, so cards holding it survive.
+    """
+    row = query_one("SELECT * FROM word_suggestions WHERE id = ?", (suggestion_id,))
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suggestion not found.")
+
+    now = utcnow()
+    word_id = row["word_id"]
+
+    if payload.approve:
+        if word_id is None:
+            text = row["canonical"] or row["text"]
+            key = exact_key(text)
+            clash = query_one("SELECT id FROM words WHERE text_key = ?", (key,))
+            if clash is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="That word is already in the pool.",
+                )
+            aliases = [row["text"]] if exact_key(row["text"]) != key else []
+            word_id = new_id()
+            execute(
+                """
+                INSERT INTO words (id, text, text_key, category, difficulty, aliases,
+                                   strict_match, active, created_at, created_by, source)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?, 'suggestion')
+                """,
+                (
+                    word_id,
+                    text,
+                    key,
+                    row["category"] or "General",
+                    row["difficulty"],
+                    json.dumps(aliases),
+                    now,
+                    f"player:{row['player_name']}",
+                ),
+            )
+        else:
+            execute("UPDATE words SET active = 1 WHERE id = ?", (word_id,))
+        new_status = "approved"
+    else:
+        if word_id is not None:
+            execute("UPDATE words SET active = 0 WHERE id = ?", (word_id,))
+        new_status = "rejected"
+
+    execute(
+        """
+        UPDATE word_suggestions
+        SET status = ?, verdict = ?, judged_by = 'admin', word_id = ?, decided_at = ?
+        WHERE id = ?
+        """,
+        (new_status, payload.reason or row["verdict"], word_id, now, suggestion_id),
+    )
+    invalidate_all_indexes()
+    record_audit(
+        f"suggestion.admin_{new_status}",
+        actor_name="admin",
+        entity="word_suggestion",
+        entity_id=suggestion_id,
+        detail=row["text"],
+    )
+
+    updated = query_one("SELECT * FROM word_suggestions WHERE id = ?", (suggestion_id,))
+    assert updated is not None
+    return suggestion_public(updated)
+
+
+# --------------------------------------------------------------------------- cards
 
 
 @router.get("/cards", response_model=list[CardPublic])
 def all_cards(
     game_id: str | None = Query(default=None),
-    _admin: sqlite3.Row = Depends(require_admin),
+    _admin: Identity = Depends(require_admin),
 ) -> list[CardPublic]:
     """Every card across every game, or scoped to one game."""
     where = "WHERE cd.game_id = ?" if game_id else ""
@@ -138,7 +197,7 @@ def all_cards(
     rows = query_all(
         f"""
         SELECT cd.id FROM cards cd
-        JOIN users u ON u.id = cd.user_id
+        JOIN players p ON p.id = cd.player_id
         {where}
         ORDER BY cd.created_at DESC
         """,
@@ -151,7 +210,7 @@ def all_cards(
 
 
 @router.get("/keys", response_model=list[ApiKeyPublic])
-def list_keys(_admin: sqlite3.Row = Depends(require_admin)) -> list[ApiKeyPublic]:
+def list_keys(_admin: Identity = Depends(require_admin)) -> list[ApiKeyPublic]:
     rows = query_all("SELECT * FROM api_keys ORDER BY created_at DESC")
     return [
         ApiKeyPublic(
@@ -168,9 +227,7 @@ def list_keys(_admin: sqlite3.Row = Depends(require_admin)) -> list[ApiKeyPublic
 
 
 @router.post("/keys", response_model=ApiKeyCreated, status_code=status.HTTP_201_CREATED)
-def create_key(
-    payload: ApiKeyCreate, admin: sqlite3.Row = Depends(require_admin)
-) -> ApiKeyCreated:
+def create_key(payload: ApiKeyCreate, _admin: Identity = Depends(require_admin)) -> ApiKeyCreated:
     """Mint an ingest API key. The full value is returned once and only once."""
     full, prefix, key_hash = generate_api_key()
     key_id = new_id()
@@ -178,14 +235,13 @@ def create_key(
     execute(
         """
         INSERT INTO api_keys (id, name, prefix, key_hash, active, created_at, created_by)
-        VALUES (?, ?, ?, ?, 1, ?, ?)
+        VALUES (?, ?, ?, ?, 1, ?, 'admin')
         """,
-        (key_id, payload.name, prefix, key_hash, now, admin["id"]),
+        (key_id, payload.name, prefix, key_hash, now),
     )
     record_audit(
         "apikey.created",
-        actor_id=admin["id"],
-        actor_name=admin["nickname"],
+        actor_name="admin",
         entity="api_key",
         entity_id=key_id,
         detail=payload.name,
@@ -196,7 +252,7 @@ def create_key(
 
 
 @router.delete("/keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
-def revoke_key(key_id: str, admin: sqlite3.Row = Depends(require_admin)) -> None:
+def revoke_key(key_id: str, _admin: Identity = Depends(require_admin)) -> None:
     """Revoke a key. The row is kept so its usage history stays auditable."""
     row = query_one("SELECT * FROM api_keys WHERE id = ?", (key_id,))
     if row is None:
@@ -204,8 +260,7 @@ def revoke_key(key_id: str, admin: sqlite3.Row = Depends(require_admin)) -> None
     execute("UPDATE api_keys SET active = 0 WHERE id = ?", (key_id,))
     record_audit(
         "apikey.revoked",
-        actor_id=admin["id"],
-        actor_name=admin["nickname"],
+        actor_name="admin",
         entity="api_key",
         entity_id=key_id,
         detail=row["name"],
@@ -218,13 +273,13 @@ def revoke_key(key_id: str, admin: sqlite3.Row = Depends(require_admin)) -> None
 @router.get("/audit", response_model=list[AuditEntry])
 def audit_trail(
     limit: int = Query(default=80, ge=1, le=500),
-    _admin: sqlite3.Row = Depends(require_admin),
+    _admin: Identity = Depends(require_admin),
 ) -> list[AuditEntry]:
     rows = query_all("SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ?", (limit,))
     return [AuditEntry.model_validate(dict(row)) for row in rows]
 
 
 @router.get("/presence")
-def presence(_admin: sqlite3.Row = Depends(require_admin)) -> dict:
+def presence(_admin: Identity = Depends(require_admin)) -> dict:
     """Live WebSocket viewer counts, keyed by game id."""
     return hub.presence()

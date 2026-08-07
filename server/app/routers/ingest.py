@@ -81,7 +81,7 @@ async def ingest(
 
             hits = [
                 IngestHit(
-                    user_id=hit.user_id,
+                    player_id=hit.player_id,
                     nickname=hit.nickname,
                     card_id=hit.card_id,
                     position=hit.position,
@@ -92,7 +92,7 @@ async def ingest(
             ]
             bingos = [
                 IngestBingo(
-                    user_id=award.user_id,
+                    player_id=award.player_id,
                     nickname=award.nickname,
                     pattern=award.pattern,
                     label=award.label,
