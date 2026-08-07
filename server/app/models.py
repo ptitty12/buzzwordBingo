@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 GameStatus = Literal["lobby", "live", "paused", "ended"]
 
-ACCENTS = ("cyan", "violet", "amber", "lime", "rose", "sky")
+ACCENTS = ("green", "teal", "cyan", "violet", "amber", "lime", "rose", "sky")
 
 
 class ORMModel(BaseModel):
@@ -25,7 +25,7 @@ class UserPublic(ORMModel):
     id: str
     nickname: str
     avatar: str = ""
-    accent: str = "cyan"
+    accent: str = "green"
     is_admin: bool = False
     created_at: str
     last_seen_at: str | None = None
@@ -37,7 +37,7 @@ class UserSummary(ORMModel):
     id: str
     nickname: str
     avatar: str = ""
-    accent: str = "cyan"
+    accent: str = "green"
     is_admin: bool = False
     games_played: int = 0
 
@@ -45,7 +45,7 @@ class UserSummary(ORMModel):
 class SignUpRequest(BaseModel):
     nickname: str = Field(min_length=2, max_length=24)
     avatar: str = Field(default="", max_length=8)
-    accent: str = "cyan"
+    accent: str = "green"
 
     @field_validator("nickname")
     @classmethod
@@ -58,7 +58,7 @@ class SignUpRequest(BaseModel):
     @field_validator("accent")
     @classmethod
     def known_accent(cls, value: str) -> str:
-        return value if value in ACCENTS else "cyan"
+        return value if value in ACCENTS else "green"
 
 
 class SignInRequest(BaseModel):
@@ -182,7 +182,7 @@ class CardPublic(BaseModel):
     user_id: str
     nickname: str
     avatar: str = ""
-    accent: str = "cyan"
+    accent: str = "green"
     card_size: int
     locked: bool = False
     created_at: str
@@ -270,7 +270,7 @@ class LeaderboardEntry(BaseModel):
     card_id: str
     nickname: str
     avatar: str = ""
-    accent: str = "cyan"
+    accent: str = "green"
     marked: int
     total: int
     lines: int

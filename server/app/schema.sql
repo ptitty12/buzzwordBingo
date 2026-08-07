@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
     nickname      TEXT NOT NULL,
     nickname_key  TEXT NOT NULL UNIQUE,   -- lowercased, for case-insensitive uniqueness
     avatar        TEXT NOT NULL DEFAULT '',
-    accent        TEXT NOT NULL DEFAULT 'cyan',
+    accent        TEXT NOT NULL DEFAULT 'green',
     is_admin      INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL,
     last_seen_at  TEXT

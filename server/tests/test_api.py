@@ -100,9 +100,12 @@ class TestAuthorization:
         game = _create_game(client, admin_headers)
         player = make_player(client, "Toby")
         _build_card(client, game["id"], player)
-        assert client.get(f"/api/games/{game['id']}/cards", headers=player["headers"]).status_code == 403
+        response = client.get(f"/api/games/{game['id']}/cards", headers=player["headers"])
+        assert response.status_code == 403
 
-    def test_players_cannot_read_another_players_card(self, client: TestClient, admin_headers: dict):
+    def test_players_cannot_read_another_players_card(
+        self, client: TestClient, admin_headers: dict
+    ):
         game = _create_game(client, admin_headers)
         alice = make_player(client, "Alice")
         bob = make_player(client, "Bob")
@@ -160,7 +163,9 @@ class TestWordAdmin:
         assert response.json()["category"] == "Consulting-Speak"
 
     def test_unused_word_is_deleted_outright(self, client: TestClient, admin_headers: dict):
-        word = client.post("/api/words", json={"text": "ideation station"}, headers=admin_headers).json()
+        word = client.post(
+            "/api/words", json={"text": "ideation station"}, headers=admin_headers
+        ).json()
         assert client.delete(f"/api/words/{word['id']}", headers=admin_headers).status_code == 204
         remaining = client.get("/api/words", headers=admin_headers).json()
         assert not any(w["id"] == word["id"] for w in remaining)
@@ -243,7 +248,8 @@ class TestCardBuilding:
         game = _create_game(client, admin_headers)
         player = make_player(client, "Erin")
         _build_card(client, game["id"], player)
-        assert client.get(f"/api/games/{game['id']}/card", headers=player["headers"]).status_code == 200
+        response = client.get(f"/api/games/{game['id']}/card", headers=player["headers"])
+        assert response.status_code == 200
 
 
 class TestGameLifecycle:
@@ -269,7 +275,8 @@ class TestGameLifecycle:
 
     def test_game_can_be_looked_up_by_code(self, client: TestClient, admin_headers: dict):
         game = _create_game(client, admin_headers)
-        assert client.get(f"/api/games/{game['code']}", headers=admin_headers).json()["id"] == game["id"]
+        found = client.get(f"/api/games/{game['code']}", headers=admin_headers).json()
+        assert found["id"] == game["id"]
 
 
 class TestIngestAndScoring:
@@ -415,7 +422,9 @@ class TestIngestAndScoring:
         refreshed = client.get(f"/api/games/{game['id']}/card", headers=player["headers"]).json()
         assert refreshed["marked_count"] == 1, "only the free space survives a reset"
         assert refreshed["lines"] == []
-        assert client.get(f"/api/games/{game['id']}/transcript", headers=player["headers"]).json() == []
+        assert client.get(
+            f"/api/games/{game['id']}/transcript", headers=player["headers"]
+        ).json() == []
 
 
 class TestAdminConsole:
@@ -447,7 +456,8 @@ class TestAdminConsole:
         assert demoted.json()["is_admin"] is False
 
     def test_cannot_demote_the_last_admin(self, client: TestClient, admin_headers: dict):
-        admins = [u for u in client.get("/api/admin/users", headers=admin_headers).json() if u["is_admin"]]
+        everyone = client.get("/api/admin/users", headers=admin_headers).json()
+        admins = [u for u in everyone if u["is_admin"]]
         assert len(admins) == 1
         response = client.patch(
             f"/api/admin/users/{admins[0]['id']}", json={"is_admin": False}, headers=admin_headers
@@ -463,7 +473,8 @@ class TestAdminConsole:
         listed = client.get("/api/admin/keys", headers=admin_headers).json()
         assert all("key" not in k for k in listed), "full keys must never be listed"
 
-        assert client.delete(f"/api/admin/keys/{created['id']}", headers=admin_headers).status_code == 204
+        revoke = client.delete(f"/api/admin/keys/{created['id']}", headers=admin_headers)
+        assert revoke.status_code == 204
         revoked = next(
             k for k in client.get("/api/admin/keys", headers=admin_headers).json()
             if k["id"] == created["id"]
@@ -472,5 +483,6 @@ class TestAdminConsole:
 
     def test_audit_trail_records_mutations(self, client: TestClient, admin_headers: dict):
         client.post("/api/words", json={"text": "auditable moment"}, headers=admin_headers)
-        actions = [e["action"] for e in client.get("/api/admin/audit", headers=admin_headers).json()]
+        entries = client.get("/api/admin/audit", headers=admin_headers).json()
+        actions = [e["action"] for e in entries]
         assert "word.created" in actions

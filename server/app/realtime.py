@@ -39,7 +39,9 @@ class ConnectionHub:
         async with self._lock:
             self._rooms[game_id].add(socket)
             self._identities[socket] = nickname
-        logger.info("ws connect game=%s who=%s viewers=%d", game_id, nickname, self.viewers(game_id))
+        logger.info(
+            "ws connect game=%s who=%s viewers=%d", game_id, nickname, self.viewers(game_id)
+        )
 
     async def disconnect(self, game_id: str, socket: WebSocket) -> None:
         async with self._lock:

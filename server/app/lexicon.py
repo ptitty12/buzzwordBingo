@@ -199,9 +199,7 @@ def stem(token: str) -> str:
         word = _undouble(word[:-2])
     elif word.endswith("ies") and len(word) > 4:
         word = f"{word[:-3]}y"
-    elif word.endswith("sses"):
-        word = word[:-2]
-    elif len(word) > 4 and re.search(r"(ch|sh|ss|x|z|o)es$", word):
+    elif word.endswith("sses") or len(word) > 4 and re.search(r"(ch|sh|ss|x|z|o)es$", word):
         word = word[:-2]
     elif word.endswith("s") and len(word) > 3 and not re.search(r"(ss|us|is)$", word):
         word = word[:-1]

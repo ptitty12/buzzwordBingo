@@ -114,15 +114,20 @@ async def ingest(
                 )
             )
 
+            # Tokens carry their own sequence and hit count so the client ticker can
+            # highlight the exact word that scored, without re-deriving anything.
             await hub.broadcast(
                 game["id"],
                 "token",
                 {
-                    "tokens": outcome.tokens,
+                    "tokens": [
+                        {"raw": raw, "seq": outcome.seq + offset, "hits": token_hits}
+                        for offset, (raw, token_hits) in enumerate(
+                            zip(outcome.tokens, outcome.token_hits, strict=True)
+                        )
+                    ],
                     "speaker": payload.speaker,
                     "source": payload.source,
-                    "seq": outcome.seq,
-                    "hit_count": len(hits),
                 },
             )
             if hits:

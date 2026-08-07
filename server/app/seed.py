@@ -202,7 +202,7 @@ def seed_admin() -> tuple[str, bool]:
         """
         INSERT INTO users (id, nickname, nickname_key, avatar, accent, is_admin,
                            created_at, last_seen_at)
-        VALUES (?, ?, ?, '⬢', 'cyan', 1, ?, ?)
+        VALUES (?, ?, ?, '⬢', 'green', 1, ?, ?)
         """,
         (user_id, nickname, nickname, now, now),
     )

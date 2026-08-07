@@ -67,7 +67,9 @@ def update_user(
 
     fields = payload.model_dump(exclude_unset=True)
     if payload.is_admin is False and target["is_admin"]:
-        remaining = _count("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND id != ?", (user_id,))
+        remaining = _count(
+            "SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND id != ?", (user_id,)
+        )
         if remaining == 0:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

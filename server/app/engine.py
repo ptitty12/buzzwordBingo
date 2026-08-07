@@ -326,6 +326,10 @@ class BingoAward:
 class IngestResult:
     token_ids: list[str]
     tokens: list[str]
+    #: Hits attributed to each token, positionally aligned with ``tokens``. A phrase
+    #: scores on the token that completes it, so the ticker highlights the right word
+    #: even when a whole sentence arrives in one call.
+    token_hits: list[int]
     hits: list[TokenHit]
     bingos: list[BingoAward]
     seq: int
@@ -355,11 +359,14 @@ def apply_transcript(
     index = get_index(game_id)
     tokens = tokenize(text)[: get_settings().max_ingest_tokens]
 
-    result = IngestResult(token_ids=[], tokens=tokens, hits=[], bingos=[], seq=0)
+    result = IngestResult(
+        token_ids=[], tokens=tokens, token_hits=[], hits=[], bingos=[], seq=0
+    )
     if not tokens:
         return result
 
     seq = _next_seq(game_id)
+    result.seq = seq  # sequence of the first token in this chunk
     now = utcnow()
     already_marked = _marked_cell_ids(game_id)
     touched_cards: set[str] = set()
@@ -414,8 +421,8 @@ def apply_transcript(
                 )
 
         result.token_ids.append(token_id)
+        result.token_hits.append(len(hits))
         result.hits.extend(hits)
-        result.seq = seq
         seq += 1
 
     for card_id in touched_cards:
