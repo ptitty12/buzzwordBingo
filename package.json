@@ -1,0 +1,21 @@
+{
+  "name": "buzzword-bingo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Buzzword Bingo — real-time, transcript-driven bingo for meetings that could have been an email.",
+  "license": "MIT",
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "cd server && .venv/bin/python -m app.main",
+    "dev:web": "npm run dev --workspace web",
+    "build": "npm run build --workspace web",
+    "test": "cd server && .venv/bin/python -m pytest -q",
+    "typecheck": "npm run typecheck --workspace web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
