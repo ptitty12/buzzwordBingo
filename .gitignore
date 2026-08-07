@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Data & secrets
+server/data/
+*.db
+*.db-wal
+*.db-shm
+.secret_key
+.env
+.env.local
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
