@@ -14,7 +14,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from ..config import get_settings
 from ..db import execute, new_id, query_all, query_one, record_audit, utcnow
 from ..engine import invalidate_all_indexes
-from ..lexicon import exact_key, match_keys, normalize_text, phrases_match, tokenize
+from ..lexicon import (
+    MAX_PHRASE_LENGTH,
+    exact_key,
+    is_matchable,
+    match_keys,
+    normalize_text,
+    phrases_match,
+    tokenize,
+)
 from ..models import (
     SuggestionResponse,
     WordBulkCreate,
@@ -28,6 +36,11 @@ from ..security import Identity, require_admin, require_identity
 from ..serializers import suggestion_public, word_public
 
 router = APIRouter(prefix="/api/words", tags=["words"])
+
+TOO_LONG_DETAIL = (
+    f"That phrase is longer than {MAX_PHRASE_LENGTH} words, so the transcript scanner "
+    "could never find it — the square would never mark."
+)
 
 WORD_SELECT = """
 SELECT w.*,
@@ -200,6 +213,10 @@ def _create_word_from_verdict(
     key = exact_key(text)
     if not key or query_one("SELECT id FROM words WHERE text_key = ?", (key,)):
         return None, None
+    # The prescreen bounded the submission, but the judge may hand back a longer
+    # canonical form; an unmatchable word must not reach the pool by that route either.
+    if not is_matchable(text):
+        return None, None
 
     # Keep the participant's spelling as an alias when the judge corrected it, so the square
     # still marks if a speaker says it the way it was submitted.
@@ -256,6 +273,8 @@ def create_word(payload: WordCreate, _admin: Identity = Depends(require_admin)) 
     text_key = exact_key(payload.text)
     if not text_key:
         raise HTTPException(status_code=422, detail="That word normalises to nothing.")
+    if not is_matchable(payload.text):
+        raise HTTPException(status_code=422, detail=TOO_LONG_DETAIL)
     if query_one("SELECT id FROM words WHERE text_key = ?", (text_key,)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -314,7 +333,11 @@ def bulk_create(payload: WordBulkCreate, _admin: Identity = Depends(require_admi
             head, _, tail = raw.partition(":")
             if tail.strip():
                 category, text = head.strip() or payload.category, tail.strip()
-        entries.append((" ".join(text.split()), category))
+        cleaned = " ".join(text.split())
+        # Silently dropping a line would be worse than not importing it, but bulk import
+        # already skips duplicates rather than failing the batch, so match that.
+        if is_matchable(cleaned):
+            entries.append((cleaned, category))
 
     created: list[WordPublic] = []
     now = utcnow()

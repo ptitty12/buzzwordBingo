@@ -28,7 +28,11 @@ import re
 import unicodedata
 
 #: Longest multi-word phrase the n-gram scanner will consider (e.g. "move the needle").
-MAX_PHRASE_LENGTH = 5
+#: A phrase longer than this can never be found, because the scanner never assembles an
+#: n-gram that big — the square would sit on the grid permanently unmarkable. Six covers
+#: the shipped pool ("at the end of the day"); :func:`is_matchable` keeps anything longer
+#: from being added, so the two limits cannot drift apart.
+MAX_PHRASE_LENGTH = 6
 
 #: Carry no signal inside a phrase but are frequently dropped or slurred in speech.
 PHRASE_STOPWORDS = frozenset({"the", "a", "an", "of", "to"})
@@ -174,6 +178,17 @@ def tokenize(value: str) -> list[str]:
         if token and any(c.isalnum() for c in token):
             tokens.append(token)
     return tokens
+
+
+def is_matchable(value: str) -> bool:
+    """True when the transcript scanner could ever find this phrase.
+
+    A phrase longer than :data:`MAX_PHRASE_LENGTH` is never assembled into an n-gram, so
+    a square carrying it can never be marked. That is invisible at the point of adding a
+    word and only shows up as a square that mysteriously never lights up, which is why
+    every route into the pool checks this rather than trusting the caller.
+    """
+    return 0 < len(tokenize(value)) <= MAX_PHRASE_LENGTH
 
 
 def _undouble(word: str) -> str:

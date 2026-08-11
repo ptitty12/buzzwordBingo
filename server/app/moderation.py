@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .config import get_settings
-from .lexicon import tokenize
+from .lexicon import MAX_PHRASE_LENGTH, tokenize
 
 logger = logging.getLogger("jargon.moderation")
 
@@ -129,7 +129,9 @@ def prescreen(text: str) -> Verdict | None:
             reason="That does not contain any letters or numbers.",
             judged_by="prescreen",
         )
-    if len(tokens) > 6:
+    # Tied to the scanner's limit on purpose: a longer phrase is one no transcript could
+    # ever match, so approving it would put a permanently dead square on someone's grid.
+    if len(tokens) > MAX_PHRASE_LENGTH:
         return Verdict(
             decision="rejected",
             reason="That is a sentence, not a buzzword — try a shorter phrase.",
