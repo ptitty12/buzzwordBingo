@@ -5,10 +5,10 @@ forgiving about shape: post one word at a time, or a whole sentence, or a whole
 paragraph. Everything is tokenised server-side and applied in order.
 
     curl -X POST http://localhost:8000/api/ingest \\
-      -H 'X-API-Key: bb_...' -H 'Content-Type: application/json' \\
-      -d '{"text": "synergy", "game_code": "K7Q2M"}'
+      -H 'X-API-Key: jw_...' -H 'Content-Type: application/json' \\
+      -d '{"text": "synergy", "meeting_code": "K7Q2M"}'
 
-Omitting both ``game_id`` and ``game_code`` fans the token out to every live game, which
+Omitting both ``meeting_id`` and ``meeting_code`` fans the token out to every live meeting, which
 is what you want when a single meeting drives every room in the building.
 """
 
@@ -20,79 +20,79 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..db import query_all, query_one
-from ..engine import apply_transcript, game_lock, leaderboard
+from ..engine import apply_transcript, meeting_lock, standings
 from ..models import (
-    IngestBingo,
-    IngestGameResult,
+    IngestCompletion,
     IngestHit,
+    IngestMeetingResult,
     IngestRequest,
     IngestResponse,
 )
 from ..realtime import hub
 from ..security import require_api_key
-from ..serializers import GAME_SELECT, game_public
+from ..serializers import MEETING_SELECT, meeting_public
 
 router = APIRouter(prefix="/api/ingest", tags=["ingest"])
-logger = logging.getLogger("bingo.ingest")
+logger = logging.getLogger("jargon.ingest")
 
 
 def _resolve_targets(payload: IngestRequest) -> list[sqlite3.Row]:
-    """Pick the games a chunk applies to."""
-    if payload.game_id:
-        row = query_one(f"{GAME_SELECT} WHERE g.id = ?", (payload.game_id,))
+    """Pick the meetings a chunk applies to."""
+    if payload.meeting_id:
+        row = query_one(f"{MEETING_SELECT} WHERE g.id = ?", (payload.meeting_id,))
         if row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown game_id.")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown meeting_id.")
         return [row]
 
-    if payload.game_code:
-        row = query_one(f"{GAME_SELECT} WHERE g.code = ?", (payload.game_code.upper(),))
+    if payload.meeting_code:
+        row = query_one(f"{MEETING_SELECT} WHERE g.code = ?", (payload.meeting_code.upper(),))
         if row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown game_code.")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Unknown meeting_code."
+            )
         return [row]
 
-    return list(query_all(f"{GAME_SELECT} WHERE g.status = 'live'"))
+    return list(query_all(f"{MEETING_SELECT} WHERE g.status = 'live'"))
 
 
 @router.post("", response_model=IngestResponse)
-async def ingest(
-    payload: IngestRequest, caller: str = Depends(require_api_key)
-) -> IngestResponse:
-    """Feed transcript text into one or every live game."""
+async def ingest(payload: IngestRequest, caller: str = Depends(require_api_key)) -> IngestResponse:
+    """Feed transcript text into one or every live meeting."""
     targets = _resolve_targets(payload)
-    results: list[IngestGameResult] = []
+    results: list[IngestMeetingResult] = []
     token_count = 0
 
-    for game in targets:
-        if game["status"] != "live":
-            # Explicitly addressed games report why nothing happened; broadcast mode
-            # silently skips games that are not running.
-            if payload.game_id or payload.game_code:
+    for meeting in targets:
+        if meeting["status"] != "live":
+            # Explicitly addressed meetings report why nothing happened; broadcast mode
+            # silently skips meetings that are not running.
+            if payload.meeting_id or payload.meeting_code:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Game '{game['name']}' is {game['status']}, not live.",
+                    detail=f"Meeting '{meeting['name']}' is {meeting['status']}, not live.",
                 )
             continue
 
-        # Serialise per game so "first to bingo" reflects true transcript order.
-        async with game_lock(game["id"]):
+        # Serialise per meeting so "first to complete a line" reflects true transcript order.
+        async with meeting_lock(meeting["id"]):
             outcome = apply_transcript(
-                game, payload.text, speaker=payload.speaker, source=payload.source
+                meeting, payload.text, speaker=payload.speaker, source=payload.source
             )
 
             hits = [
                 IngestHit(
-                    player_id=hit.player_id,
+                    participant_id=hit.participant_id,
                     nickname=hit.nickname,
-                    card_id=hit.card_id,
+                    grid_id=hit.grid_id,
                     position=hit.position,
                     word=hit.word_text,
                     matched_phrase=hit.matched_phrase,
                 )
                 for hit in outcome.hits
             ]
-            bingos = [
-                IngestBingo(
-                    player_id=award.player_id,
+            completions = [
+                IngestCompletion(
+                    participant_id=award.participant_id,
                     nickname=award.nickname,
                     pattern=award.pattern,
                     label=award.label,
@@ -100,24 +100,24 @@ async def ingest(
                     cells=award.cells,
                     achieved_at=award.achieved_at,
                 )
-                for award in outcome.bingos
+                for award in outcome.completions
             ]
 
             token_count += len(outcome.tokens)
             results.append(
-                IngestGameResult(
-                    game_id=game["id"],
-                    game_name=game["name"],
+                IngestMeetingResult(
+                    meeting_id=meeting["id"],
+                    meeting_name=meeting["name"],
                     tokens=outcome.tokens,
                     hits=hits,
-                    bingos=bingos,
+                    completions=completions,
                 )
             )
 
             # Tokens carry their own sequence and hit count so the client ticker can
             # highlight the exact word that scored, without re-deriving anything.
             await hub.broadcast(
-                game["id"],
+                meeting["id"],
                 "token",
                 {
                     "tokens": [
@@ -131,23 +131,27 @@ async def ingest(
                 },
             )
             if hits:
-                await hub.broadcast(
-                    game["id"], "marks", [hit.model_dump() for hit in hits]
-                )
-            if bingos:
-                for award in bingos:
-                    await hub.broadcast(game["id"], "bingo", award.model_dump())
+                await hub.broadcast(meeting["id"], "marks", [hit.model_dump() for hit in hits])
+            if completions:
+                for award in completions:
+                    await hub.broadcast(meeting["id"], "completion", award.model_dump())
                     logger.info(
-                        "BINGO game=%s player=%s pattern=%s rank=%d",
-                        game["name"], award.nickname, award.pattern, award.rank,
+                        "COMPLETION meeting=%s participant=%s pattern=%s rank=%d",
+                        meeting["name"],
+                        award.nickname,
+                        award.pattern,
+                        award.rank,
                     )
-            if hits or bingos:
-                await hub.broadcast(game["id"], "leaderboard", leaderboard(game["id"]))
+            if hits or completions:
+                await hub.broadcast(meeting["id"], "standings", standings(meeting["id"]))
 
     if results:
         logger.info(
-            "ingest caller=%s games=%d tokens=%d hits=%d",
-            caller, len(results), token_count, sum(len(r.hits) for r in results),
+            "ingest caller=%s meetings=%d tokens=%d hits=%d",
+            caller,
+            len(results),
+            token_count,
+            sum(len(r.hits) for r in results),
         )
 
     return IngestResponse(token_count=token_count, results=results)
@@ -155,11 +159,13 @@ async def ingest(
 
 @router.get("/targets")
 def ingest_targets(_caller: str = Depends(require_api_key)) -> list[dict]:
-    """Games currently accepting transcript — lets an integration discover game codes."""
-    rows = query_all(f"{GAME_SELECT} WHERE g.status IN ('live', 'paused', 'lobby')")
+    """Meetings currently accepting transcript — lets an integration discover meeting codes."""
+    rows = query_all(f"{MEETING_SELECT} WHERE g.status IN ('live', 'paused', 'open')")
     return [
         {
-            **game_public(row).model_dump(include={"id", "name", "code", "status", "player_count"}),
+            **meeting_public(row).model_dump(
+                include={"id", "name", "code", "status", "participant_count"}
+            ),
         }
         for row in rows
     ]

@@ -1,7 +1,7 @@
 [project]
-name = "buzzword-bingo-server"
+name = "jargon-watch-server"
 version = "1.0.0"
-description = "Real-time transcript-driven bingo engine."
+description = "Real-time transcript-driven completion engine."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

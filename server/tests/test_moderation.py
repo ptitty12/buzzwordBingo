@@ -1,4 +1,4 @@
-"""Tests for the player word-suggestion flow and the LLM buzzword judge.
+"""Tests for the participant word-suggestion flow and the LLM buzzword judge.
 
 The judge itself is a network call, so these tests exercise the parts we own: the
 prescreen, the parsing of the model's JSON, and the endpoint's behaviour for each
@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app import moderation
 from app.moderation import CATEGORIES, Verdict, _verdict_from, prescreen
 
-from .conftest import build_card, create_game, join
+from .conftest import build_grid, create_meeting, join
 
 
 class TestPrescreen:
@@ -92,21 +92,19 @@ class TestVerdictParsing:
 
     def test_every_declared_category_is_accepted(self):
         for category in CATEGORIES:
-            verdict = _verdict_from(
-                {"approved": True, "category": category}, "m", fallback="x"
-            )
+            verdict = _verdict_from({"approved": True, "category": category}, "m", fallback="x")
             assert verdict.category == category
 
 
 class TestSuggestEndpoint:
-    def _player(self, client: TestClient, admin_headers: dict, nickname: str = "Suggester"):
-        game = create_game(client, admin_headers)
-        return game, join(client, game["id"], nickname)
+    def _participant(self, client: TestClient, admin_headers: dict, nickname: str = "Suggester"):
+        meeting = create_meeting(client, admin_headers)
+        return meeting, join(client, meeting["id"], nickname)
 
     def test_approved_word_enters_the_pool(
         self, client: TestClient, admin_headers: dict, monkeypatch
     ):
-        game, player = self._player(client, admin_headers)
+        meeting, participant = self._participant(client, admin_headers)
         monkeypatch.setattr(
             "app.routers.words.judge",
             lambda text, pool: Verdict(
@@ -122,7 +120,7 @@ class TestSuggestEndpoint:
         response = client.post(
             "/api/words/suggest",
             json={"text": "business fundamentals"},
-            headers=player["headers"],
+            headers=participant["headers"],
         )
         assert response.status_code == 201
         body = response.json()
@@ -131,13 +129,13 @@ class TestSuggestEndpoint:
         assert body["word"]["source"] == "suggestion"
         assert "Suggester" in body["word"]["created_by"]
 
-        pool = client.get("/api/words", headers=player["headers"]).json()
+        pool = client.get("/api/words", headers=participant["headers"]).json()
         assert any(w["text"] == "business fundamentals" for w in pool)
 
     def test_rejected_word_stays_out_of_the_pool(
         self, client: TestClient, admin_headers: dict, monkeypatch
     ):
-        game, player = self._player(client, admin_headers)
+        meeting, participant = self._participant(client, admin_headers)
         monkeypatch.setattr(
             "app.routers.words.judge",
             lambda text, pool: Verdict(
@@ -148,7 +146,7 @@ class TestSuggestEndpoint:
         )
 
         response = client.post(
-            "/api/words/suggest", json={"text": "sales"}, headers=player["headers"]
+            "/api/words/suggest", json={"text": "sales"}, headers=participant["headers"]
         )
         assert response.status_code == 201
         body = response.json()
@@ -156,14 +154,14 @@ class TestSuggestEndpoint:
         assert body["word"] is None
         assert "ordinary" in body["suggestion"]["verdict"]
 
-        pool = client.get("/api/words", headers=player["headers"]).json()
+        pool = client.get("/api/words", headers=participant["headers"]).json()
         assert not any(w["text"] == "sales" for w in pool)
 
     def test_misspelling_is_canonicalised_and_aliased(
         self, client: TestClient, admin_headers: dict, monkeypatch
     ):
-        """The player's spelling must still mark the square if a speaker says it."""
-        game, player = self._player(client, admin_headers)
+        """The participant's spelling must still mark the square if a speaker says it."""
+        meeting, participant = self._participant(client, admin_headers)
         monkeypatch.setattr(
             "app.routers.words.judge",
             lambda text, pool: Verdict(
@@ -177,7 +175,7 @@ class TestSuggestEndpoint:
         )
 
         body = client.post(
-            "/api/words/suggest", json={"text": "crosspolination"}, headers=player["headers"]
+            "/api/words/suggest", json={"text": "crosspolination"}, headers=participant["headers"]
         ).json()
         assert body["word"]["text"] == "cross-pollination"
         assert "crosspolination" in body["word"]["aliases"]
@@ -185,29 +183,31 @@ class TestSuggestEndpoint:
     def test_duplicate_is_rejected_before_the_model_runs(
         self, client: TestClient, admin_headers: dict, monkeypatch
     ):
-        game, player = self._player(client, admin_headers)
+        meeting, participant = self._participant(client, admin_headers)
 
         def explode(text, pool):
             raise AssertionError("the judge must not be called for a known duplicate")
 
         monkeypatch.setattr("app.routers.words.judge", explode)
         response = client.post(
-            "/api/words/suggest", json={"text": "synergy"}, headers=player["headers"]
+            "/api/words/suggest", json={"text": "synergy"}, headers=participant["headers"]
         )
         assert response.status_code == 409
 
     def test_pending_when_no_model_is_configured(self, client: TestClient, admin_headers: dict):
         """With no API key the suggestion queues instead of auto-approving."""
-        game, player = self._player(client, admin_headers)
+        meeting, participant = self._participant(client, admin_headers)
         response = client.post(
-            "/api/words/suggest", json={"text": "quantum leadership"}, headers=player["headers"]
+            "/api/words/suggest",
+            json={"text": "quantum leadership"},
+            headers=participant["headers"],
         )
         assert response.status_code == 201
         assert response.json()["suggestion"]["status"] == "pending"
         assert response.json()["word"] is None
 
     def test_quota_is_enforced(self, client: TestClient, admin_headers: dict, monkeypatch):
-        game, player = self._player(client, admin_headers)
+        meeting, participant = self._participant(client, admin_headers)
         monkeypatch.setattr(
             "app.routers.words.judge",
             lambda text, pool: Verdict(decision="rejected", reason="No.", judged_by="stub"),
@@ -215,64 +215,70 @@ class TestSuggestEndpoint:
 
         from app.config import get_settings
 
-        limit = get_settings().suggestions_per_player
+        limit = get_settings().suggestions_per_participant
         for index in range(limit):
             response = client.post(
                 "/api/words/suggest",
                 json={"text": f"placeholder phrase {index}"},
-                headers=player["headers"],
+                headers=participant["headers"],
             )
             assert response.status_code == 201
 
         blocked = client.post(
-            "/api/words/suggest", json={"text": "one too many"}, headers=player["headers"]
+            "/api/words/suggest", json={"text": "one too many"}, headers=participant["headers"]
         )
         assert blocked.status_code == 429
 
-    def test_suggesting_requires_joining_a_game(self, client: TestClient):
+    def test_suggesting_requires_joining_a_meeting(self, client: TestClient):
         assert client.post("/api/words/suggest", json={"text": "synergy"}).status_code == 401
 
-    def test_proposals_close_once_the_card_is_locked_in(
+    def test_proposals_close_once_the_grid_is_locked_in(
         self, client: TestClient, admin_headers: dict, monkeypatch
     ):
-        """Proposing is part of drafting; committing to a card ends it."""
-        game, player = self._player(client, admin_headers)
+        """Proposing is part of drafting; committing to a grid ends it."""
+        meeting, participant = self._participant(client, admin_headers)
         called: list[str] = []
         monkeypatch.setattr(
             "app.routers.words.judge",
-            lambda text, pool: called.append(text)
-            or Verdict(decision="approved", reason="Sure.", judged_by="claude-opus-5"),
+            lambda text, pool: (
+                called.append(text)
+                or Verdict(decision="approved", reason="Sure.", judged_by="claude-opus-5")
+            ),
         )
 
-        build_card(client, game["id"], player)
+        build_grid(client, meeting["id"], participant)
         response = client.post(
-            "/api/words/suggest", json={"text": "blamestorming"}, headers=player["headers"]
+            "/api/words/suggest", json={"text": "blamestorming"}, headers=participant["headers"]
         )
         assert response.status_code == 409
         assert "locked in" in response.json()["detail"]
         assert called == [], "the model must not be billed for a request we already refuse"
 
-    def test_player_can_see_their_own_history(
+    def test_participant_can_see_their_own_history(
         self, client: TestClient, admin_headers: dict, monkeypatch
     ):
-        game, player = self._player(client, admin_headers)
+        meeting, participant = self._participant(client, admin_headers)
         monkeypatch.setattr(
             "app.routers.words.judge",
             lambda text, pool: Verdict(decision="rejected", reason="Not jargon.", judged_by="stub"),
         )
-        client.post("/api/words/suggest", json={"text": "spreadsheet"}, headers=player["headers"])
+        client.post(
+            "/api/words/suggest", json={"text": "spreadsheet"}, headers=participant["headers"]
+        )
 
-        body = client.get("/api/words/suggestions/mine", headers=player["headers"]).json()
+        body = client.get("/api/words/suggestions/mine", headers=participant["headers"]).json()
         assert len(body["suggestions"]) == 1
         assert body["remaining"] == body["limit"] - 1
 
 
 class TestAdminReview:
     def test_admin_can_approve_a_pending_suggestion(self, client: TestClient, admin_headers: dict):
-        game = create_game(client, admin_headers)
-        player = join(client, game["id"], "Hopeful")
+        meeting = create_meeting(client, admin_headers)
+        participant = join(client, meeting["id"], "Hopeful")
         client.post(
-            "/api/words/suggest", json={"text": "quantum leadership"}, headers=player["headers"]
+            "/api/words/suggest",
+            json={"text": "quantum leadership"},
+            headers=participant["headers"],
         )
 
         pending = client.get(
@@ -288,14 +294,14 @@ class TestAdminReview:
         assert decided.status_code == 200
         assert decided.json()["status"] == "approved"
 
-        pool = client.get("/api/words", headers=player["headers"]).json()
+        pool = client.get("/api/words", headers=participant["headers"]).json()
         assert any(w["text"] == "quantum leadership" for w in pool)
 
     def test_admin_can_overturn_an_approval(
         self, client: TestClient, admin_headers: dict, monkeypatch
     ):
-        game = create_game(client, admin_headers)
-        player = join(client, game["id"], "Overruled")
+        meeting = create_meeting(client, admin_headers)
+        participant = join(client, meeting["id"], "Overruled")
         monkeypatch.setattr(
             "app.routers.words.judge",
             lambda text, pool: Verdict(
@@ -308,7 +314,9 @@ class TestAdminReview:
             ),
         )
         client.post(
-            "/api/words/suggest", json={"text": "regrettable phrase"}, headers=player["headers"]
+            "/api/words/suggest",
+            json={"text": "regrettable phrase"},
+            headers=participant["headers"],
         )
 
         suggestion = client.get("/api/admin/suggestions", headers=admin_headers).json()[0]
@@ -318,13 +326,15 @@ class TestAdminReview:
             headers=admin_headers,
         )
 
-        active = client.get("/api/words", headers=player["headers"]).json()
+        active = client.get("/api/words", headers=participant["headers"]).json()
         assert not any(w["text"] == "regrettable phrase" for w in active)
 
     def test_suggestions_are_admin_only(self, client: TestClient, admin_headers: dict):
-        game = create_game(client, admin_headers)
-        player = join(client, game["id"], "Curious")
-        assert client.get("/api/admin/suggestions", headers=player["headers"]).status_code == 403
+        meeting = create_meeting(client, admin_headers)
+        participant = join(client, meeting["id"], "Curious")
+        assert (
+            client.get("/api/admin/suggestions", headers=participant["headers"]).status_code == 403
+        )
 
 
 class TestJudgeFallbacks:
@@ -345,9 +355,7 @@ class TestJudgeFallbacks:
                 raise anthropic.APIConnectionError(request=None)
 
         monkeypatch.setattr(anthropic, "Anthropic", BoomClient)
-        monkeypatch.setattr(
-            moderation, "get_settings", lambda: _settings_with_key("test-key")
-        )
+        monkeypatch.setattr(moderation, "get_settings", lambda: _settings_with_key("test-key"))
         assert moderation.judge("quantum leadership", []).decision == "pending"
 
     def test_malformed_json_yields_pending(self, monkeypatch):

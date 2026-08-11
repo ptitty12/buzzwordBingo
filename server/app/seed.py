@@ -1,4 +1,4 @@
-"""Seed the database with a starter buzzword pool, an ingest key and a demo game.
+"""Seed the database with a starter buzzword pool, an ingest key and a demo meeting.
 
 Seeding is idempotent: every insert is keyed on a natural unique column, so running it
 against an existing database only tops up what is missing.
@@ -14,7 +14,7 @@ from .engine import invalidate_all_indexes
 from .lexicon import exact_key
 from .security import generate_api_key
 
-logger = logging.getLogger("bingo.seed")
+logger = logging.getLogger("jargon.seed")
 
 #: (text, category, difficulty, aliases)
 WORD_POOL: list[tuple[str, str, int, list[str]]] = [
@@ -106,7 +106,7 @@ WORD_POOL: list[tuple[str, str, int, list[str]]] = [
     ("double click", "Meeting Filler", 2, ["double-click"]),
     ("parking lot", "Meeting Filler", 2, ["park that"]),
     ("action item", "Meeting Filler", 1, ["action items", "actionable"]),
-    ("quick win", "Meeting Filler", 1, ["quick wins"]),
+    ("quick win", "Meeting Filler", 1, ["quick completions"]),
     ("at the end of the day", "Meeting Filler", 1, []),
     ("to be honest", "Meeting Filler", 1, ["to be fair", "honestly"]),
     ("let's unpack that", "Meeting Filler", 2, ["unpack"]),
@@ -145,7 +145,7 @@ WORD_POOL: list[tuple[str, str, int, list[str]]] = [
     ("ecosystem", "Consulting-Speak", 1, []),
     ("ideate", "Consulting-Speak", 2, ["ideation"]),
     ("pivot", "Consulting-Speak", 1, []),
-    ("game changer", "Consulting-Speak", 1, ["game-changer", "game changing"]),
+    ("meeting changer", "Consulting-Speak", 1, ["meeting-changer", "meeting changing"]),
     ("best in class", "Consulting-Speak", 2, ["best-in-class"]),
     ("frictionless", "Consulting-Speak", 2, []),
     ("seamless", "Consulting-Speak", 1, ["seamlessly"]),
@@ -201,49 +201,49 @@ def seed_api_key() -> str | None:
     return full
 
 
-def seed_demo_game() -> str | None:
-    """Create a demo game in the lobby if the instance has none."""
-    if query_one("SELECT id FROM games LIMIT 1"):
+def seed_demo_meeting() -> str | None:
+    """Create a demo meeting in the open if the instance has none."""
+    if query_one("SELECT id FROM meetings LIMIT 1"):
         return None
-    game_id = new_id()
+    meeting_id = new_id()
     execute(
         """
-        INSERT INTO games (id, name, code, status, card_size, free_space, created_at,
+        INSERT INTO meetings (id, name, code, status, grid_size, free_space, created_at,
                            created_by, description)
-        VALUES (?, ?, ?, 'lobby', 5, 1, ?, 'seed', ?)
+        VALUES (?, ?, ?, 'open', 5, 1, ?, 'seed', ?)
         """,
         (
-            game_id,
+            meeting_id,
             "Q3 All-Hands",
             "DEMO1",
             utcnow(),
             "The quarterly alignment session that could have been an email.",
         ),
     )
-    return game_id
+    return meeting_id
 
 
 def run_seed() -> dict:
     """Full idempotent seed. Safe to call on every boot.
 
     Note there is no admin account to create — administrators authenticate with a PIN,
-    and players are created when they join a game.
+    and participants are created when they join a meeting.
     """
     words_added = seed_words()
     api_key = seed_api_key()
-    game_id = seed_demo_game()
+    meeting_id = seed_demo_meeting()
 
-    if words_added or api_key or game_id:
+    if words_added or api_key or meeting_id:
         record_audit(
             "system.seeded",
             entity="system",
-            detail=f"words+{words_added} game={bool(game_id)}",
+            detail=f"words+{words_added} meeting={bool(meeting_id)}",
         )
 
     return {
         "words_added": words_added,
         "api_key": api_key,
-        "demo_game_id": game_id,
+        "demo_meeting_id": meeting_id,
     }
 
 

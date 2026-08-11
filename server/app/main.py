@@ -1,7 +1,7 @@
 """Application entrypoint.
 
 Wires the routers together, serves the built frontend, and exposes the OpenAPI contract
-at ``/api/docs`` — behind the admin PIN, so players never wander into the integration
+at ``/api/docs`` — behind the admin PIN, so participants never wander into the integration
 surface.
 """
 
@@ -23,27 +23,27 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .db import get_connection
-from .routers import admin, auth, games, ingest, stream, words
+from .routers import admin, auth, ingest, meetings, stream, words
 from .seed import run_seed
 
-logger = logging.getLogger("bingo")
+logger = logging.getLogger("jargon")
 
 API_DESCRIPTION = """
-Real-time, transcript-driven bingo.
+Real-time, transcript-driven jargon tracking.
 
 **How it works**
 
-1. An admin curates the buzzword pool and opens a game.
-2. Players join a game with a nickname — no account — and draft a card from the pool.
+1. An admin curates the buzzword pool and opens a meeting.
+2. Participants join a meeting with a nickname — no account — and draft a grid from the pool.
 3. A transcription pipeline streams the meeting into `POST /api/ingest`, word by word.
 4. The matching engine stems each token (`synergies` -> `synergy`, `leveraged` ->
-   `leverage`) and marks every card carrying that word.
-5. Completed lines are ranked on the live leaderboard, first to bingo wins.
+   `leverage`) and marks every grid carrying that word.
+5. Completed lines are ranked on the live standings, first to complete a line.
 
-Players can also propose new buzzwords via `POST /api/words/suggest`; an LLM curator
+Participants can also propose new buzzwords via `POST /api/words/suggest`; an LLM curator
 decides whether the term is jargon worth a square.
 
-Clients subscribe to `ws://<host>/ws/games/{game_id}` for the live event stream.
+Clients subscribe to `ws://<host>/ws/meetings/{meeting_id}` for the live event stream.
 """
 
 _basic = HTTPBasic(auto_error=False, description="Any username; password is the admin PIN.")
@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("ADMIN_PIN is empty — the admin console is disabled.")
     if not settings.moderation_enabled:
         logger.info(
-            "ANTHROPIC_API_KEY unset — player word suggestions will queue for admin review."
+            "ANTHROPIC_API_KEY unset — participant word suggestions will queue for admin review."
         )
 
     yield
@@ -110,7 +110,7 @@ def create_app() -> FastAPI:
         response.headers["X-Response-Time"] = f"{elapsed_ms:.1f}ms"
         return response
 
-    for router in (auth.router, words.router, games.router, ingest.router, admin.router):
+    for router in (auth.router, words.router, meetings.router, ingest.router, admin.router):
         app.include_router(router)
     app.include_router(stream.router)
 
@@ -151,7 +151,7 @@ def _require_docs_access(credentials: HTTPBasicCredentials | None = Depends(_bas
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Administrator PIN required.",
-            headers={"WWW-Authenticate": 'Basic realm="Buzzword Bingo API"'},
+            headers={"WWW-Authenticate": 'Basic realm="Jargon Watch API"'},
         )
 
 
@@ -176,12 +176,14 @@ def _mount_frontend(app: FastAPI, static_dir: str) -> None:
     dist = Path(static_dir)
     index = dist / "index.html"
     if not index.exists():
+
         @app.get("/", include_in_schema=False)
         def dev_placeholder() -> dict:
             return {
-                "message": "Buzzword Bingo API is running.",
+                "message": "Jargon Watch API is running.",
                 "hint": "Run `npm run dev` for the frontend, or `npm run build` to serve it here.",
             }
+
         return
 
     assets = dist / "assets"

@@ -4,11 +4,11 @@ Two kinds of caller, deliberately asymmetric:
 
 * **Administrators** authenticate with a PIN and have no account. The PIN is the only
   admin credential, so an empty ``ADMIN_PIN`` locks the console rather than opening it.
-* **Players** have no account either. They join one game with a nickname and receive a
-  token scoped to *that game* — it grants nothing anywhere else.
+* **Participants** have no account either. They join one meeting with a nickname and receive a
+  token scoped to *that meeting* — it grants nothing anywhere else.
 
 Session tokens are HMAC-signed so the server can trust the identity claim without
-storing a secret per player. A token's subject is ``admin`` or ``p:<player_id>``.
+storing a secret per participant. A token's subject is ``admin`` or ``p:<participant_id>``.
 
 Two other credential types exist:
   * ``X-API-Key`` — required by the transcript ingest endpoint, stored as a SHA-256 hash.
@@ -29,31 +29,31 @@ from fastapi import Depends, Header, HTTPException, status
 from .config import get_settings
 from .db import execute, query_one, utcnow
 
-API_KEY_PREFIX = "bb"
+API_KEY_PREFIX = "jw"
 ADMIN_SUBJECT = "admin"
-PLAYER_PREFIX = "p:"
+PARTICIPANT_PREFIX = "p:"
 
 
 @dataclass(frozen=True)
 class Identity:
-    """Who is calling. Exactly one of ``is_admin`` / ``player`` is meaningful."""
+    """Who is calling. Exactly one of ``is_admin`` / ``participant`` is meaningful."""
 
     is_admin: bool
-    player: sqlite3.Row | None = None
+    participant: sqlite3.Row | None = None
 
     @property
-    def game_id(self) -> str | None:
-        return self.player["game_id"] if self.player is not None else None
+    def meeting_id(self) -> str | None:
+        return self.participant["meeting_id"] if self.participant is not None else None
 
     @property
     def display_name(self) -> str:
         if self.is_admin:
             return "admin"
-        return self.player["nickname"] if self.player is not None else "anonymous"
+        return self.participant["nickname"] if self.participant is not None else "anonymous"
 
-    def owns_game(self, game_id: str) -> bool:
-        """Admins reach every game; a player reaches only the one they joined."""
-        return self.is_admin or self.game_id == game_id
+    def owns_meeting(self, meeting_id: str) -> bool:
+        """Admins reach every meeting; a participant reaches only the one they joined."""
+        return self.is_admin or self.meeting_id == meeting_id
 
 
 def _sign(payload: str) -> str:
@@ -63,7 +63,7 @@ def _sign(payload: str) -> str:
 
 
 def issue_token(subject: str) -> str:
-    """Create a signed session token for a subject (``admin`` or ``p:<player_id>``)."""
+    """Create a signed session token for a subject (``admin`` or ``p:<participant_id>``)."""
     payload = base64.urlsafe_b64encode(subject.encode("utf-8")).decode("ascii").rstrip("=")
     return f"{payload}.{_sign(payload)}"
 
@@ -82,8 +82,8 @@ def verify_token(token: str) -> str | None:
         return None
 
 
-def issue_player_token(player_id: str) -> str:
-    return issue_token(f"{PLAYER_PREFIX}{player_id}")
+def issue_participant_token(participant_id: str) -> str:
+    return issue_token(f"{PARTICIPANT_PREFIX}{participant_id}")
 
 
 def issue_admin_token() -> str:
@@ -123,25 +123,27 @@ def current_identity(authorization: str | None = Header(default=None)) -> Identi
     """Resolve the caller. Returns an anonymous identity when no valid token is present."""
     subject = verify_token(_extract_bearer(authorization))
     if not subject:
-        return Identity(is_admin=False, player=None)
+        return Identity(is_admin=False, participant=None)
 
     if subject == ADMIN_SUBJECT:
-        return Identity(is_admin=True, player=None)
+        return Identity(is_admin=True, participant=None)
 
-    if subject.startswith(PLAYER_PREFIX):
-        player = query_one("SELECT * FROM players WHERE id = ?", (subject[len(PLAYER_PREFIX):],))
-        if player is not None:
-            return Identity(is_admin=False, player=player)
+    if subject.startswith(PARTICIPANT_PREFIX):
+        participant = query_one(
+            "SELECT * FROM participants WHERE id = ?", (subject[len(PARTICIPANT_PREFIX) :],)
+        )
+        if participant is not None:
+            return Identity(is_admin=False, participant=participant)
 
-    return Identity(is_admin=False, player=None)
+    return Identity(is_admin=False, participant=None)
 
 
 def require_identity(identity: Identity = Depends(current_identity)) -> Identity:
-    """Require any authenticated caller — an admin or a player in some game."""
-    if not identity.is_admin and identity.player is None:
+    """Require any authenticated caller — an admin or a participant in some meeting."""
+    if not identity.is_admin and identity.participant is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Join a game to continue.",
+            detail="Join a meeting to continue.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return identity
@@ -157,12 +159,12 @@ def require_admin(identity: Identity = Depends(current_identity)) -> Identity:
     return identity
 
 
-def require_player(identity: Identity = Depends(require_identity)) -> Identity:
-    """Require a player token specifically (admins have no card of their own)."""
-    if identity.player is None:
+def require_participant(identity: Identity = Depends(require_identity)) -> Identity:
+    """Require a participant token specifically (admins have no grid of their own)."""
+    if identity.participant is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="This action is for players — join the game with a nickname.",
+            detail="This action is for participants — join the meeting with a nickname.",
         )
     return identity
 

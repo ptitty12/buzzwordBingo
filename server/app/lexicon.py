@@ -1,9 +1,9 @@
 """Lexical normalisation and fuzzy buzzword matching.
 
 A transcript arrives as a stream of raw, messy tokens ("Synergies,", "leveraging",
-"LOW-HANGING"). A bingo card holds curated buzzwords ("synergy", "leverage",
+"LOW-HANGING"). A completion grid holds curated buzzwords ("synergy", "leverage",
 "low hanging fruit"). This module decides whether a spoken token is "the same word"
-as a card word.
+as a grid word.
 
 Design
 ------
@@ -17,7 +17,7 @@ corrupting the canonical stem of unrelated words::
     match_keys("leveraged")  -> {"leverag"}             # inflectional: -ed
     match_keys("disruption") -> {"disruption", "disrupt"}  # derivational: -ion
 
-Matching is intentionally *lossy but symmetric*: both the card word and the transcript
+Matching is intentionally *lossy but symmetric*: both the grid word and the transcript
 token run through the identical pipeline, so a word always matches itself no matter how
 aggressive the stemmer is.
 """
@@ -99,10 +99,42 @@ IRREGULARS: dict[str, str] = {
 #: Short function words and acronyms that must never be stemmed.
 NEVER_STEM = frozenset(
     {
-        "this", "that", "these", "those", "less", "miss", "boss", "loss", "news",
-        "bus", "gas", "plus", "thus", "yes", "his", "its", "us", "as", "ops",
-        "devops", "kpis", "okrs", "apis", "saas", "paas", "iaas", "aws", "ai",
-        "ml", "llm", "roi", "sla", "eod", "eta", "poc", "mvp",
+        "this",
+        "that",
+        "these",
+        "those",
+        "less",
+        "miss",
+        "boss",
+        "loss",
+        "news",
+        "bus",
+        "gas",
+        "plus",
+        "thus",
+        "yes",
+        "his",
+        "its",
+        "us",
+        "as",
+        "ops",
+        "devops",
+        "kpis",
+        "okrs",
+        "apis",
+        "saas",
+        "paas",
+        "iaas",
+        "aws",
+        "ai",
+        "ml",
+        "llm",
+        "roi",
+        "sla",
+        "eod",
+        "eta",
+        "poc",
+        "mvp",
     }
 )
 
@@ -215,28 +247,28 @@ def stem(token: str) -> str:
 #: rather than replacing the canonical stem, so "disruption" can reach "disrupt" without
 #: "decision" hijacking "decide".
 _DERIVATIONS: list[tuple[re.Pattern[str], object]] = [
-    (re.compile(r"(t|s)ion$"), lambda w: w[:-3]),          # disruption -> disrupt
+    (re.compile(r"(t|s)ion$"), lambda w: w[:-3]),  # disruption -> disrupt
     (re.compile(r"ization$"), lambda w: f"{w[:-7]}ize"),
     (re.compile(r"isation$"), lambda w: f"{w[:-7]}ise"),
-    (re.compile(r"ative$"), lambda w: f"{w[:-5]}ate"),     # iterative -> iterate
-    (re.compile(r"ive$"), lambda w: w[:-3]),               # disruptive -> disrupt
-    (re.compile(r"ness$"), lambda w: w[:-4]),              # awareness -> aware
-    (re.compile(r"ment$"), lambda w: w[:-4]),              # alignment -> align
+    (re.compile(r"ative$"), lambda w: f"{w[:-5]}ate"),  # iterative -> iterate
+    (re.compile(r"ive$"), lambda w: w[:-3]),  # disruptive -> disrupt
+    (re.compile(r"ness$"), lambda w: w[:-4]),  # awareness -> aware
+    (re.compile(r"ment$"), lambda w: w[:-4]),  # alignment -> align
     (re.compile(r"ability$"), lambda w: f"{w[:-7]}able"),  # scalability -> scalable
     (re.compile(r"ibility$"), lambda w: f"{w[:-7]}ible"),
-    (re.compile(r"ility$"), lambda w: f"{w[:-5]}le"),      # agility -> agile
-    (re.compile(r"ity$"), lambda w: w[:-3]),               # velocity -> veloc
-    (re.compile(r"ance$"), lambda w: w[:-4]),              # performance -> perform
+    (re.compile(r"ility$"), lambda w: f"{w[:-5]}le"),  # agility -> agile
+    (re.compile(r"ity$"), lambda w: w[:-3]),  # velocity -> veloc
+    (re.compile(r"ance$"), lambda w: w[:-4]),  # performance -> perform
     (re.compile(r"ence$"), lambda w: w[:-4]),
-    (re.compile(r"al$"), lambda w: w[:-2]),                # operational -> operation
-    (re.compile(r"ic$"), lambda w: w[:-2]),                # strategic -> strateg
-    (re.compile(r"able$"), lambda w: w[:-4]),              # actionable -> action
-    (re.compile(r"ify$"), lambda w: w[:-3]),               # gamify -> gam
-    (re.compile(r"ize$"), lambda w: w[:-3]),               # operationalize -> operational
+    (re.compile(r"al$"), lambda w: w[:-2]),  # operational -> operation
+    (re.compile(r"ic$"), lambda w: w[:-2]),  # strategic -> strateg
+    (re.compile(r"able$"), lambda w: w[:-4]),  # actionable -> action
+    (re.compile(r"ify$"), lambda w: w[:-3]),  # gamify -> gam
+    (re.compile(r"ize$"), lambda w: w[:-3]),  # operationalize -> operational
     (re.compile(r"ise$"), lambda w: w[:-3]),
-    (re.compile(r"er$"), lambda w: w[:-2]),                # disrupter -> disrupt
-    (re.compile(r"or$"), lambda w: w[:-2]),                # innovator -> innovat
-    (re.compile(r"y$"), lambda w: w[:-1]),                 # synergy -> synerg
+    (re.compile(r"er$"), lambda w: w[:-2]),  # disrupter -> disrupt
+    (re.compile(r"or$"), lambda w: w[:-2]),  # innovator -> innovat
+    (re.compile(r"y$"), lambda w: w[:-1]),  # synergy -> synerg
 ]
 
 MIN_KEY_LENGTH = 3
@@ -294,9 +326,7 @@ def match_keys(phrase: str) -> set[str]:
     if stems:
         keys.add(" ".join(stems))
 
-    without_stopwords = [
-        s for s in (stem(t) for t in tokens if t not in PHRASE_STOPWORDS) if s
-    ]
+    without_stopwords = [s for s in (stem(t) for t in tokens if t not in PHRASE_STOPWORDS) if s]
     if without_stopwords:
         keys.add(" ".join(without_stopwords))
 

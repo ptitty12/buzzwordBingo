@@ -36,9 +36,9 @@ export function AdminGate({ onBack }: { onBack: () => void }) {
   }
 
   return (
-    <div className="login-shell">
-      <div className="login-card" style={{ maxWidth: 380 }}>
-        <div className="login-hero">
+    <div className="gate-shell">
+      <div className="gate-panel" style={{ maxWidth: 380 }}>
+        <div className="gate-hero">
           <div className="brand-mark" aria-hidden="true">
             <i /><i /><i /><i />
           </div>
@@ -78,7 +78,7 @@ export function AdminGate({ onBack }: { onBack: () => void }) {
         </div>
 
         <p style={{ textAlign: 'center', marginTop: 16 }}>
-          <button className="btn btn-ghost btn-sm" onClick={onBack}>← Back to games</button>
+          <button className="btn btn-ghost btn-sm" onClick={onBack}>← Back to meetings</button>
         </p>
       </div>
     </div>

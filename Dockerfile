@@ -19,9 +19,9 @@ RUN pip install --no-cache-dir -e ./server
 COPY --from=web /build/web/dist ./web/dist
 
 # Run as a non-root user; the data directory is the only writable path needed.
-RUN useradd --create-home --uid 10001 bingo \
- && mkdir -p /app/server/data && chown -R bingo:bingo /app/server/data
-USER bingo
+RUN useradd --create-home --uid 10001 completion \
+ && mkdir -p /app/server/data && chown -R completion:completion /app/server/data
+USER completion
 
 ENV ENVIRONMENT=production HOST=0.0.0.0 PORT=8000
 EXPOSE 8000

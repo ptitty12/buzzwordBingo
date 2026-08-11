@@ -1,14 +1,14 @@
-"""The bingo engine: card geometry, transcript matching, and win detection.
+"""The completion engine: grid geometry, transcript matching, and win detection.
 
 Ingest is the hot path and the one place where ordering genuinely matters — "first to
-bingo" is only meaningful if tokens are applied in the order they were spoken. Each game
+completion" is only meaningful if tokens are applied in the order they were spoken. Each meeting
 therefore serialises ingest behind its own asyncio lock, and every token is written with
 a monotonic sequence number.
 
-Matching works off an in-memory index (``GameIndex``) rebuilt whenever a game's cards
-change. The index maps every match key produced by :mod:`app.lexicon` to the card cells
+Matching works off an in-memory index (``MeetingIndex``) rebuilt whenever a meeting's grids
+change. The index maps every match key produced by :mod:`app.lexicon` to the grid cells
 carrying that word, so a spoken token is resolved with a dict lookup rather than a scan
-over every card.
+over every grid.
 """
 
 from __future__ import annotations
@@ -27,27 +27,27 @@ from .lexicon import MAX_PHRASE_LENGTH, exact_key, match_keys, tokenize
 # --------------------------------------------------------------------------- geometry
 
 
-def free_position(card_size: int) -> int:
-    """Index of the free space — the exact centre, only defined for odd-sized cards."""
-    return (card_size * card_size) // 2
+def free_position(grid_size: int) -> int:
+    """Index of the free space — the exact centre, only defined for odd-sized grids."""
+    return (grid_size * grid_size) // 2
 
 
-def winning_lines(card_size: int) -> dict[str, list[int]]:
-    """Every winning pattern for a card, keyed by a stable pattern id."""
+def completed_lines(grid_size: int) -> dict[str, list[int]]:
+    """Every completed pattern for a grid, keyed by a stable pattern id."""
     lines: dict[str, list[int]] = {}
-    for row in range(card_size):
-        lines[f"row-{row}"] = [row * card_size + col for col in range(card_size)]
-    for col in range(card_size):
-        lines[f"col-{col}"] = [row * card_size + col for row in range(card_size)]
-    lines["diag-main"] = [i * card_size + i for i in range(card_size)]
-    lines["diag-anti"] = [i * card_size + (card_size - 1 - i) for i in range(card_size)]
+    for row in range(grid_size):
+        lines[f"row-{row}"] = [row * grid_size + col for col in range(grid_size)]
+    for col in range(grid_size):
+        lines[f"col-{col}"] = [row * grid_size + col for row in range(grid_size)]
+    lines["diag-main"] = [i * grid_size + i for i in range(grid_size)]
+    lines["diag-anti"] = [i * grid_size + (grid_size - 1 - i) for i in range(grid_size)]
     lines["corners"] = [
         0,
-        card_size - 1,
-        card_size * (card_size - 1),
-        card_size * card_size - 1,
+        grid_size - 1,
+        grid_size * (grid_size - 1),
+        grid_size * grid_size - 1,
     ]
-    lines["blackout"] = list(range(card_size * card_size))
+    lines["blackout"] = list(range(grid_size * grid_size))
     return lines
 
 
@@ -73,8 +73,8 @@ class CellRef:
     """A single markable square, denormalised for fast lookup."""
 
     cell_id: str
-    card_id: str
-    player_id: str
+    grid_id: str
+    participant_id: str
     nickname: str
     position: int
     word_id: str
@@ -82,10 +82,10 @@ class CellRef:
 
 
 @dataclass
-class GameIndex:
-    """In-memory match index for one game."""
+class MeetingIndex:
+    """In-memory match index for one meeting."""
 
-    game_id: str
+    meeting_id: str
     keys: dict[str, list[CellRef]] = field(default_factory=dict)
     strict_keys: dict[str, list[CellRef]] = field(default_factory=dict)
     max_phrase: int = 1
@@ -95,56 +95,56 @@ class GameIndex:
         return (self.strict_keys if strict else self.keys).get(key, [])
 
 
-_indexes: dict[str, GameIndex] = {}
+_indexes: dict[str, MeetingIndex] = {}
 _locks: dict[str, asyncio.Lock] = {}
 
 
-def game_lock(game_id: str) -> asyncio.Lock:
-    """Per-game ingest lock, so token application stays strictly ordered."""
-    if game_id not in _locks:
-        _locks[game_id] = asyncio.Lock()
-    return _locks[game_id]
+def meeting_lock(meeting_id: str) -> asyncio.Lock:
+    """Per-meeting ingest lock, so token application stays strictly ordered."""
+    if meeting_id not in _locks:
+        _locks[meeting_id] = asyncio.Lock()
+    return _locks[meeting_id]
 
 
-def invalidate_index(game_id: str) -> None:
-    """Drop the cached index after cards or words change."""
-    _indexes.pop(game_id, None)
+def invalidate_index(meeting_id: str) -> None:
+    """Drop the cached index after grids or words change."""
+    _indexes.pop(meeting_id, None)
 
 
 def invalidate_all_indexes() -> None:
     _indexes.clear()
 
 
-def build_index(game_id: str) -> GameIndex:
-    """Rebuild a game's match index from the database."""
+def build_index(meeting_id: str) -> MeetingIndex:
+    """Rebuild a meeting's match index from the database."""
     rows = query_all(
         """
         SELECT c.id  AS cell_id,
-               c.card_id,
+               c.grid_id,
                c.position,
                c.word_id,
                w.text         AS word_text,
                w.aliases      AS aliases,
                w.strict_match AS strict_match,
-               cd.player_id   AS player_id,
+               cd.participant_id   AS participant_id,
                p.nickname     AS nickname
-        FROM card_cells c
-        JOIN cards cd   ON cd.id = c.card_id
-        JOIN players p  ON p.id = cd.player_id
+        FROM grid_cells c
+        JOIN grids cd   ON cd.id = c.grid_id
+        JOIN participants p  ON p.id = cd.participant_id
         JOIN words w    ON w.id = c.word_id
-        WHERE cd.game_id = ? AND c.is_free = 0
+        WHERE cd.meeting_id = ? AND c.is_free = 0
         """,
-        (game_id,),
+        (meeting_id,),
     )
 
-    index = GameIndex(game_id=game_id)
+    index = MeetingIndex(meeting_id=meeting_id)
     index.window = deque(maxlen=max(get_settings().phrase_window, MAX_PHRASE_LENGTH))
 
     for row in rows:
         ref = CellRef(
             cell_id=row["cell_id"],
-            card_id=row["card_id"],
-            player_id=row["player_id"],
+            grid_id=row["grid_id"],
+            participant_id=row["participant_id"],
             nickname=row["nickname"],
             position=row["position"],
             word_id=row["word_id"],
@@ -168,10 +168,10 @@ def build_index(game_id: str) -> GameIndex:
     return index
 
 
-def get_index(game_id: str) -> GameIndex:
-    if game_id not in _indexes:
-        _indexes[game_id] = build_index(game_id)
-    return _indexes[game_id]
+def get_index(meeting_id: str) -> MeetingIndex:
+    if meeting_id not in _indexes:
+        _indexes[meeting_id] = build_index(meeting_id)
+    return _indexes[meeting_id]
 
 
 def _parse_aliases(raw: str | None) -> list[str]:
@@ -184,25 +184,25 @@ def _parse_aliases(raw: str | None) -> list[str]:
     return [str(item) for item in parsed if str(item).strip()] if isinstance(parsed, list) else []
 
 
-# --------------------------------------------------------------------------- card build
+# --------------------------------------------------------------------------- grid build
 
 
-def generate_card_words(
-    game_id: str,
+def generate_grid_words(
+    meeting_id: str,
     *,
-    card_size: int,
+    grid_size: int,
     free_space: bool,
     chosen_word_ids: list[str] | None = None,
     seed: int | None = None,
 ) -> list[str | None]:
-    """Lay out a card's words.
+    """Lay out a grid's words.
 
     ``chosen_word_ids`` are placed in the order given; any shortfall is topped up with a
     random sample of the remaining active pool, so "surprise me" and "I picked twelve of
     them, fill the rest" are the same code path.
     """
-    total = card_size * card_size
-    free_index = free_position(card_size) if free_space else None
+    total = grid_size * grid_size
+    free_index = free_position(grid_size) if free_space else None
     needed = total - (1 if free_index is not None else 0)
 
     chosen = list(dict.fromkeys(chosen_word_ids or []))[:needed]
@@ -219,15 +219,15 @@ def generate_card_words(
     if shortfall > 0:
         if len(pool) < shortfall:
             raise ValueError(
-                f"Word pool too small: need {needed} words for a {card_size}x{card_size} "
-                f"card but only {len(chosen) + len(pool)} are available."
+                f"Word pool too small: need {needed} words for a {grid_size}x{grid_size} "
+                f"grid but only {len(chosen) + len(pool)} are available."
             )
         chosen.extend(pool[:shortfall])
 
-    # Deliberately *not* shuffled: the player arranges their own squares in the drafting
-    # preview, and a shuffle here would silently rearrange the card they just laid out.
+    # Deliberately *not* shuffled: the participant arranges their own squares in the drafting
+    # preview, and a shuffle here would silently rearrange the grid they just laid out.
     # Auto-filled squares are already random because `pool` was shuffled above, so a
-    # card built with no picks at all is still a random one.
+    # grid built with no picks at all is still a random one.
 
     layout: list[str | None] = []
     cursor = 0
@@ -240,50 +240,52 @@ def generate_card_words(
     return layout
 
 
-def create_card(game: sqlite3.Row, player_id: str, word_ids: list[str] | None = None) -> str:
-    """Create (or replace) a player's card for a game. Returns the card id."""
-    card_size = game["card_size"]
-    free_space = bool(game["free_space"])
-    layout = generate_card_words(
-        game["id"],
-        card_size=card_size,
+def create_grid(
+    meeting: sqlite3.Row, participant_id: str, word_ids: list[str] | None = None
+) -> str:
+    """Create (or replace) a participant's grid for a meeting. Returns the grid id."""
+    grid_size = meeting["grid_size"]
+    free_space = bool(meeting["free_space"])
+    layout = generate_grid_words(
+        meeting["id"],
+        grid_size=grid_size,
         free_space=free_space,
         chosen_word_ids=word_ids,
     )
 
     now = utcnow()
-    card_id = new_id()
-    free_index = free_position(card_size) if free_space else None
+    grid_id = new_id()
+    free_index = free_position(grid_size) if free_space else None
 
     with transaction() as conn:
         existing = conn.execute(
-            "SELECT id, locked FROM cards WHERE game_id = ? AND player_id = ?",
-            (game["id"], player_id),
+            "SELECT id, locked FROM grids WHERE meeting_id = ? AND participant_id = ?",
+            (meeting["id"], participant_id),
         ).fetchone()
         if existing is not None:
-            # Locking in is final. Redrafting after the fact would let a player watch the
+            # Locking in is final. Redrafting after the fact would let a participant watch the
             # transcript, learn which words are landing, and rebuild around them — so the
-            # first card you commit to is the card you play.
+            # first grid you commit to is the grid you play.
             raise PermissionError(
-                "You have already locked in your card for this game."
+                "You have already locked in your grid for this meeting."
                 if not existing["locked"]
-                else "This card is locked because the game is already live."
+                else "This grid is locked because the meeting is already live."
             )
 
         conn.execute(
-            "INSERT INTO cards (id, game_id, player_id, created_at, locked)"
+            "INSERT INTO grids (id, meeting_id, participant_id, created_at, locked)"
             " VALUES (?, ?, ?, ?, 0)",
-            (card_id, game["id"], player_id, now),
+            (grid_id, meeting["id"], participant_id, now),
         )
         conn.executemany(
             """
-            INSERT INTO card_cells (id, card_id, position, word_id, is_free, marked, marked_at)
+            INSERT INTO grid_cells (id, grid_id, position, word_id, is_free, marked, marked_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     new_id(),
-                    card_id,
+                    grid_id,
                     position,
                     word_id,
                     1 if position == free_index else 0,
@@ -294,8 +296,8 @@ def create_card(game: sqlite3.Row, player_id: str, word_ids: list[str] | None = 
             ],
         )
 
-    invalidate_index(game["id"])
-    return card_id
+    invalidate_index(meeting["id"])
+    return grid_id
 
 
 # --------------------------------------------------------------------------- ingest
@@ -306,8 +308,8 @@ class TokenHit:
     """One cell marked by one token."""
 
     cell_id: str
-    card_id: str
-    player_id: str
+    grid_id: str
+    participant_id: str
     nickname: str
     position: int
     word_id: str
@@ -316,13 +318,13 @@ class TokenHit:
 
 
 @dataclass
-class BingoAward:
-    """A newly completed winning line."""
+class CompletionAward:
+    """A newly completed completed line."""
 
     id: str
-    game_id: str
-    card_id: str
-    player_id: str
+    meeting_id: str
+    grid_id: str
+    participant_id: str
     nickname: str
     pattern: str
     label: str
@@ -340,45 +342,47 @@ class IngestResult:
     #: even when a whole sentence arrives in one call.
     token_hits: list[int]
     hits: list[TokenHit]
-    bingos: list[BingoAward]
+    completions: list[CompletionAward]
     seq: int
 
 
-def _next_seq(game_id: str) -> int:
-    row = query_one("SELECT COALESCE(MAX(seq), 0) AS s FROM transcript_tokens WHERE game_id = ?",
-                    (game_id,))
+def _next_seq(meeting_id: str) -> int:
+    row = query_one(
+        "SELECT COALESCE(MAX(seq), 0) AS s FROM transcript_tokens WHERE meeting_id = ?",
+        (meeting_id,),
+    )
     return int(row["s"]) + 1 if row else 1
 
 
 def apply_transcript(
-    game: sqlite3.Row,
+    meeting: sqlite3.Row,
     text: str,
     *,
     speaker: str = "",
     source: str = "api",
 ) -> IngestResult:
-    """Apply a chunk of transcript to every card in a game.
+    """Apply a chunk of transcript to every grid in a meeting.
 
-    Callers must hold :func:`game_lock` for the game. The chunk is tokenised, and for each
-    token every n-gram *ending* at that token (up to the longest phrase on any card) is
+    Callers must hold :func:`meeting_lock` for the meeting. The chunk is tokenised, and for each
+    token every n-gram *ending* at that token (up to the longest phrase on any grid) is
     tested against the index. This is what lets "low hanging fruit" match across three
     separate ingest calls.
     """
-    game_id = game["id"]
-    index = get_index(game_id)
+    meeting_id = meeting["id"]
+    index = get_index(meeting_id)
     tokens = tokenize(text)[: get_settings().max_ingest_tokens]
 
     result = IngestResult(
-        token_ids=[], tokens=tokens, token_hits=[], hits=[], bingos=[], seq=0
+        token_ids=[], tokens=tokens, token_hits=[], hits=[], completions=[], seq=0
     )
     if not tokens:
         return result
 
-    seq = _next_seq(game_id)
+    seq = _next_seq(meeting_id)
     result.seq = seq  # sequence of the first token in this chunk
     now = utcnow()
-    already_marked = _marked_cell_ids(game_id)
-    touched_cards: set[str] = set()
+    already_marked = _marked_cell_ids(meeting_id)
+    touched_grids: set[str] = set()
 
     for raw_token in tokens:
         token_id = new_id()
@@ -400,12 +404,12 @@ def apply_transcript(
             if ref.cell_id in already_marked:
                 continue
             already_marked.add(ref.cell_id)
-            touched_cards.add(ref.card_id)
+            touched_grids.add(ref.grid_id)
             hits.append(
                 TokenHit(
                     cell_id=ref.cell_id,
-                    card_id=ref.card_id,
-                    player_id=ref.player_id,
+                    grid_id=ref.grid_id,
+                    participant_id=ref.participant_id,
                     nickname=ref.nickname,
                     position=ref.position,
                     word_id=ref.word_id,
@@ -418,14 +422,14 @@ def apply_transcript(
             conn.execute(
                 """
                 INSERT INTO transcript_tokens
-                    (id, game_id, seq, raw, normalized, speaker, source, hit_count, created_at)
+                    (id, meeting_id, seq, raw, normalized, speaker, source, hit_count, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (token_id, game_id, seq, raw_token, raw_token, speaker, source, len(hits), now),
+                (token_id, meeting_id, seq, raw_token, raw_token, speaker, source, len(hits), now),
             )
             if hits:
                 conn.executemany(
-                    "UPDATE card_cells SET marked = 1, marked_at = ?, token_id = ? WHERE id = ?",
+                    "UPDATE grid_cells SET marked = 1, marked_at = ?, token_id = ? WHERE id = ?",
                     [(now, token_id, hit.cell_id) for hit in hits],
                 )
 
@@ -434,71 +438,72 @@ def apply_transcript(
         result.hits.extend(hits)
         seq += 1
 
-    for card_id in touched_cards:
-        result.bingos.extend(_award_bingos(game, card_id))
+    for grid_id in touched_grids:
+        result.completions.extend(_award_completions(meeting, grid_id))
 
     return result
 
 
-def _marked_cell_ids(game_id: str) -> set[str]:
+def _marked_cell_ids(meeting_id: str) -> set[str]:
     rows = query_all(
         """
-        SELECT c.id FROM card_cells c
-        JOIN cards cd ON cd.id = c.card_id
-        WHERE cd.game_id = ? AND c.marked = 1
+        SELECT c.id FROM grid_cells c
+        JOIN grids cd ON cd.id = c.grid_id
+        WHERE cd.meeting_id = ? AND c.marked = 1
         """,
-        (game_id,),
+        (meeting_id,),
     )
     return {row["id"] for row in rows}
 
 
-def _award_bingos(game: sqlite3.Row, card_id: str) -> list[BingoAward]:
-    """Record any winning lines newly completed on a card."""
-    card_size = game["card_size"]
+def _award_completions(meeting: sqlite3.Row, grid_id: str) -> list[CompletionAward]:
+    """Record any completed lines newly completed on a grid."""
+    grid_size = meeting["grid_size"]
     rows = query_all(
-        "SELECT position, marked FROM card_cells WHERE card_id = ?",
-        (card_id,),
+        "SELECT position, marked FROM grid_cells WHERE grid_id = ?",
+        (grid_id,),
     )
     marked = {row["position"] for row in rows if row["marked"]}
 
     existing = {
         row["pattern"]
-        for row in query_all("SELECT pattern FROM bingos WHERE card_id = ?", (card_id,))
+        for row in query_all("SELECT pattern FROM completions WHERE grid_id = ?", (grid_id,))
     }
 
-    card = query_one(
+    grid = query_one(
         """
-        SELECT cd.id, cd.player_id, p.nickname
-        FROM cards cd JOIN players p ON p.id = cd.player_id
+        SELECT cd.id, cd.participant_id, p.nickname
+        FROM grids cd JOIN participants p ON p.id = cd.participant_id
         WHERE cd.id = ?
         """,
-        (card_id,),
+        (grid_id,),
     )
-    if card is None:
+    if grid is None:
         return []
 
-    awards: list[BingoAward] = []
+    awards: list[CompletionAward] = []
     now = utcnow()
 
-    for pattern, positions in winning_lines(card_size).items():
+    for pattern, positions in completed_lines(grid_size).items():
         if pattern in existing or not set(positions).issubset(marked):
             continue
         rank_row = query_one(
-            "SELECT COALESCE(MAX(rank), 0) AS r FROM bingos WHERE game_id = ?", (game["id"],)
+            "SELECT COALESCE(MAX(rank), 0) AS r FROM completions WHERE meeting_id = ?",
+            (meeting["id"],),
         )
         rank = int(rank_row["r"]) + 1 if rank_row else 1
-        bingo_id = new_id()
+        completion_id = new_id()
         execute(
             """
-            INSERT INTO bingos (id, game_id, card_id, player_id, pattern, cells, rank,
+            INSERT INTO completions (id, meeting_id, grid_id, participant_id, pattern, cells, rank,
                                 achieved_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                bingo_id,
-                game["id"],
-                card_id,
-                card["player_id"],
+                completion_id,
+                meeting["id"],
+                grid_id,
+                grid["participant_id"],
                 pattern,
                 json.dumps(positions),
                 rank,
@@ -507,12 +512,12 @@ def _award_bingos(game: sqlite3.Row, card_id: str) -> list[BingoAward]:
         )
         existing.add(pattern)
         awards.append(
-            BingoAward(
-                id=bingo_id,
-                game_id=game["id"],
-                card_id=card_id,
-                player_id=card["player_id"],
-                nickname=card["nickname"],
+            CompletionAward(
+                id=completion_id,
+                meeting_id=meeting["id"],
+                grid_id=grid_id,
+                participant_id=grid["participant_id"],
+                nickname=grid["nickname"],
                 pattern=pattern,
                 label=pattern_label(pattern),
                 cells=positions,
@@ -524,47 +529,48 @@ def _award_bingos(game: sqlite3.Row, card_id: str) -> list[BingoAward]:
     return awards
 
 
-# --------------------------------------------------------------------------- leaderboard
+# --------------------------------------------------------------------------- standings
 
 
-def leaderboard(game_id: str) -> list[dict]:
-    """Rank players: first to bingo wins, then by lines, then by squares marked.
+def standings(meeting_id: str) -> list[dict]:
+    """Rank participants: first to complete a line, then by lines, then by squares marked.
 
-    Players who have not yet hit bingo are still listed so everyone can see how close
+    Participants who have not yet hit completion are still listed so everyone can see how close
     the field is — they sort below anyone who has.
     """
     rows = query_all(
         """
-        SELECT cd.id            AS card_id,
-               cd.player_id     AS player_id,
+        SELECT cd.id            AS grid_id,
+               cd.participant_id     AS participant_id,
                p.nickname       AS nickname,
                p.avatar         AS avatar,
                p.accent         AS accent,
                COUNT(cc.id) FILTER (WHERE cc.marked = 1)  AS marked,
                COUNT(cc.id)                               AS total,
-               (SELECT COUNT(*) FROM bingos b WHERE b.card_id = cd.id)      AS lines,
-               (SELECT MIN(b.achieved_at) FROM bingos b WHERE b.card_id = cd.id) AS first_bingo_at,
-               (SELECT MIN(b.rank) FROM bingos b WHERE b.card_id = cd.id)   AS best_rank
-        FROM cards cd
-        JOIN players p ON p.id = cd.player_id
-        LEFT JOIN card_cells cc ON cc.card_id = cd.id
-        WHERE cd.game_id = ?
+               (SELECT COUNT(*) FROM completions b WHERE b.grid_id = cd.id)      AS lines,
+               (SELECT MIN(b.achieved_at) FROM completions b WHERE b.grid_id = cd.id)
+                                                          AS first_completion_at,
+               (SELECT MIN(b.rank) FROM completions b WHERE b.grid_id = cd.id)   AS best_rank
+        FROM grids cd
+        JOIN participants p ON p.id = cd.participant_id
+        LEFT JOIN grid_cells cc ON cc.grid_id = cd.id
+        WHERE cd.meeting_id = ?
         GROUP BY cd.id
         """,
-        (game_id,),
+        (meeting_id,),
     )
 
     entries = [
         {
-            "card_id": row["card_id"],
-            "player_id": row["player_id"],
+            "grid_id": row["grid_id"],
+            "participant_id": row["participant_id"],
             "nickname": row["nickname"],
             "avatar": row["avatar"],
             "accent": row["accent"],
             "marked": row["marked"] or 0,
             "total": row["total"] or 0,
             "lines": row["lines"] or 0,
-            "first_bingo_at": row["first_bingo_at"],
+            "first_completion_at": row["first_completion_at"],
             "best_rank": row["best_rank"],
         }
         for row in rows
@@ -572,8 +578,8 @@ def leaderboard(game_id: str) -> list[dict]:
 
     entries.sort(
         key=lambda e: (
-            0 if e["first_bingo_at"] else 1,
-            e["first_bingo_at"] or "",
+            0 if e["first_completion_at"] else 1,
+            e["first_completion_at"] or "",
             -e["lines"],
             -e["marked"],
             e["nickname"].lower(),

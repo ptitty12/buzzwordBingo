@@ -1,7 +1,7 @@
 """The buzzword judge.
 
-Players can propose additions to the word pool. Rather than letting anyone drop "the"
-onto a bingo card, each submission goes to Claude, which decides whether the term is
+Participants can propose additions to the word pool. Rather than letting anyone drop "the"
+onto a completion grid, each submission goes to Claude, which decides whether the term is
 actually *buzzwordy* — corporate jargon, consultant-speak, meeting filler, tech
 hype — and rejects ordinary vocabulary.
 
@@ -11,7 +11,7 @@ hype — and rejects ordinary vocabulary.
     "crosspolination"       -> approved  (jargon; canonicalised to "cross-pollination")
 
 The judge also returns a canonical spelling, a category and a rarity, so an approved
-suggestion lands in the pool fully curated. The player's original spelling is kept as
+suggestion lands in the pool fully curated. The participant's original spelling is kept as
 an alias so it still matches if a speaker says it that way.
 
 When no API key is configured the module degrades to ``PENDING`` — suggestions queue
@@ -28,7 +28,7 @@ from typing import Literal
 from .config import get_settings
 from .lexicon import tokenize
 
-logger = logging.getLogger("bingo.moderation")
+logger = logging.getLogger("jargon.moderation")
 
 Decision = Literal["approved", "rejected", "pending"]
 
@@ -44,14 +44,14 @@ CATEGORIES = [
     "Consulting-Speak",
 ]
 
-SYSTEM_PROMPT = """You are the curator of the word pool for Buzzword Bingo, a game \
-played during corporate meetings. Players submit terms; you decide which ones earn a \
-square on a bingo card.
+SYSTEM_PROMPT = """You are the curator of the word pool for Jargon Watch, a meeting \
+played during corporate meetings. Participants submit terms; you decide which ones earn a \
+square on a completion grid.
 
 Approve a term when it is genuine workplace jargon — corporate strategy speak, \
 consultant-speak, management cliché, meeting filler, agile/delivery ritual language, \
 sales patter, or technology hype. Buzzwords are terms whose use signals a register \
-rather than conveying much meaning, and a good bingo square is one players would \
+rather than conveying much meaning, and a good completion square is one participants would \
 groan at hearing.
 
 Reject a term when it is ordinary vocabulary rather than jargon: bare common nouns \
@@ -66,7 +66,7 @@ Misspelled jargon should be approved and corrected ("crosspolination" is \
 cross-pollination). A single vivid jargon word is fine ("synergy", "ideate").
 
 Set "canonical" to the term's standard spelling in lowercase, keeping acronyms \
-uppercase. Set "reason" to one short sentence addressed to the player explaining the \
+uppercase. Set "reason" to one short sentence addressed to the participant explaining the \
 call — it is shown to them verbatim."""
 
 RESULT_SCHEMA = {
@@ -74,7 +74,7 @@ RESULT_SCHEMA = {
     "properties": {
         "approved": {
             "type": "boolean",
-            "description": "True when the term belongs on a bingo card.",
+            "description": "True when the term belongs on a completion grid.",
         },
         "canonical": {
             "type": "string",
@@ -88,7 +88,7 @@ RESULT_SCHEMA = {
         },
         "reason": {
             "type": "string",
-            "description": "One short sentence for the player explaining the decision.",
+            "description": "One short sentence for the participant explaining the decision.",
         },
     },
     "required": ["approved", "canonical", "category", "difficulty", "reason"],
@@ -149,7 +149,7 @@ def _build_prompt(text: str, existing: list[str]) -> str:
     return (
         f"Submitted term: {text!r}\n\n"
         f"A sample of terms already in the pool: {sample}\n\n"
-        "Decide whether this term earns a square on a Buzzword Bingo card."
+        "Decide whether this term earns a square on a Jargon Watch grid."
     )
 
 
@@ -181,7 +181,7 @@ def judge(text: str, existing_words: list[str] | None = None) -> Verdict:
             max_tokens=4096,
             system=SYSTEM_PROMPT,
             # A short classification does not need deep reasoning; low effort keeps the
-            # round-trip fast enough to answer the player inline.
+            # round-trip fast enough to answer the participant inline.
             output_config={
                 "effort": "low",
                 "format": {"type": "json_schema", "schema": RESULT_SCHEMA},

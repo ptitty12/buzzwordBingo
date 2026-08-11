@@ -1,7 +1,7 @@
 """Identity.
 
-There are no accounts. An administrator proves it with a PIN; a player proves nothing
-at all beyond picking a nickname inside one game (see ``games.join_game``). This module
+There are no accounts. An administrator proves it with a PIN; a participant proves nothing
+at all beyond picking a nickname inside one meeting (see ``meetings.join_meeting``). This module
 covers the admin door and the "who am I" lookup both roles share.
 """
 
@@ -14,7 +14,7 @@ from ..db import execute, record_audit, utcnow
 from ..models import AdminSession, AdminSignIn
 from ..models import Identity as IdentityModel
 from ..security import Identity, check_admin_pin, current_identity, issue_admin_token
-from ..serializers import player_public
+from ..serializers import participant_public
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -45,9 +45,7 @@ def admin_sign_in(payload: AdminSignIn) -> AdminSession:
     if not check_admin_pin(payload.pin):
         # Deliberately vague: never reveal whether the PIN was close.
         record_audit("admin.signin_failed", actor_name="anonymous", entity="admin")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect PIN."
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect PIN.")
 
     record_audit("admin.signin", actor_name="admin", entity="admin")
     return AdminSession(token=issue_admin_token())
@@ -57,13 +55,13 @@ def admin_sign_in(payload: AdminSignIn) -> AdminSession:
 def me(identity: Identity = Depends(current_identity)) -> IdentityModel:
     """Resolve the caller — used to restore a session on page load."""
     if identity.is_admin:
-        return IdentityModel(is_admin=True, player=None)
+        return IdentityModel(is_admin=True, participant=None)
 
-    if identity.player is not None:
+    if identity.participant is not None:
         execute(
-            "UPDATE players SET last_seen_at = ? WHERE id = ?",
-            (utcnow(), identity.player["id"]),
+            "UPDATE participants SET last_seen_at = ? WHERE id = ?",
+            (utcnow(), identity.participant["id"]),
         )
-        return IdentityModel(is_admin=False, player=player_public(identity.player))
+        return IdentityModel(is_admin=False, participant=participant_public(identity.participant))
 
-    return IdentityModel(is_admin=False, player=None)
+    return IdentityModel(is_admin=False, participant=None)

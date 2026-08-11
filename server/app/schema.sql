@@ -1,18 +1,18 @@
--- Buzzword Bingo schema.
+-- Jargon Watch schema.
 -- SQLite, WAL mode. All ids are uuid4 hex strings; all timestamps are ISO-8601 UTC.
 --
--- Identity model: there are no persistent player accounts. A player is scoped to a
--- single game — they pick a nickname when they join and that identity lives and dies
--- with the game. Administrators are not accounts either; they authenticate with a PIN.
+-- Identity model: there are no persistent participant accounts. A participant is scoped to a
+-- single meeting — they pick a nickname when they join and that identity lives and dies
+-- with the meeting. Administrators are not accounts either; they authenticate with a PIN.
 
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS games (
+CREATE TABLE IF NOT EXISTS meetings (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     code        TEXT NOT NULL UNIQUE,     -- short human-shareable join code
-    status      TEXT NOT NULL DEFAULT 'lobby',  -- lobby | live | paused | ended
-    card_size   INTEGER NOT NULL DEFAULT 5,
+    status      TEXT NOT NULL DEFAULT 'open',  -- open | live | paused | ended
+    grid_size   INTEGER NOT NULL DEFAULT 5,
     free_space  INTEGER NOT NULL DEFAULT 1,
     created_at  TEXT NOT NULL,
     started_at  TEXT,
@@ -21,23 +21,23 @@ CREATE TABLE IF NOT EXISTS games (
     description TEXT NOT NULL DEFAULT ''
 );
 
-CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
+CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status);
 
--- A player exists only within one game. The same nickname may be used by different
--- people in different games; within a game it is unique.
-CREATE TABLE IF NOT EXISTS players (
+-- A participant exists only within one meeting. The same nickname may be used by different
+-- people in different meetings; within a meeting it is unique.
+CREATE TABLE IF NOT EXISTS participants (
     id           TEXT PRIMARY KEY,
-    game_id      TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    meeting_id      TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
     nickname     TEXT NOT NULL,
     nickname_key TEXT NOT NULL,           -- lowercased, for case-insensitive uniqueness
     avatar       TEXT NOT NULL DEFAULT '',
     accent       TEXT NOT NULL DEFAULT 'green',
     created_at   TEXT NOT NULL,
     last_seen_at TEXT,
-    UNIQUE (game_id, nickname_key)
+    UNIQUE (meeting_id, nickname_key)
 );
 
-CREATE INDEX IF NOT EXISTS idx_players_game ON players(game_id);
+CREATE INDEX IF NOT EXISTS idx_participants_meeting ON participants(meeting_id);
 
 CREATE TABLE IF NOT EXISTS words (
     id           TEXT PRIMARY KEY,
@@ -49,42 +49,42 @@ CREATE TABLE IF NOT EXISTS words (
     strict_match INTEGER NOT NULL DEFAULT 0,   -- disable fuzzy stemming for this word
     active       INTEGER NOT NULL DEFAULT 1,
     created_at   TEXT NOT NULL,
-    created_by   TEXT NOT NULL DEFAULT 'admin',  -- 'admin' | 'player:<nickname>' | 'seed'
+    created_by   TEXT NOT NULL DEFAULT 'admin',  -- 'admin' | 'participant:<nickname>' | 'seed'
     source       TEXT NOT NULL DEFAULT 'admin'   -- admin | seed | suggestion
 );
 
 CREATE INDEX IF NOT EXISTS idx_words_active ON words(active);
 CREATE INDEX IF NOT EXISTS idx_words_category ON words(category);
 
-CREATE TABLE IF NOT EXISTS cards (
+CREATE TABLE IF NOT EXISTS grids (
     id         TEXT PRIMARY KEY,
-    game_id    TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-    player_id  TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    meeting_id    TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    participant_id  TEXT NOT NULL REFERENCES participants(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL,
     locked     INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (game_id, player_id)
+    UNIQUE (meeting_id, participant_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_cards_game ON cards(game_id);
+CREATE INDEX IF NOT EXISTS idx_grids_meeting ON grids(meeting_id);
 
-CREATE TABLE IF NOT EXISTS card_cells (
+CREATE TABLE IF NOT EXISTS grid_cells (
     id        TEXT PRIMARY KEY,
-    card_id   TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+    grid_id   TEXT NOT NULL REFERENCES grids(id) ON DELETE CASCADE,
     position  INTEGER NOT NULL,          -- row-major index, 0-based
     word_id   TEXT REFERENCES words(id) ON DELETE CASCADE,
     is_free   INTEGER NOT NULL DEFAULT 0,
     marked    INTEGER NOT NULL DEFAULT 0,
     marked_at TEXT,
     token_id  TEXT,
-    UNIQUE (card_id, position)
+    UNIQUE (grid_id, position)
 );
 
-CREATE INDEX IF NOT EXISTS idx_cells_card ON card_cells(card_id);
-CREATE INDEX IF NOT EXISTS idx_cells_word ON card_cells(word_id);
+CREATE INDEX IF NOT EXISTS idx_cells_grid ON grid_cells(grid_id);
+CREATE INDEX IF NOT EXISTS idx_cells_word ON grid_cells(word_id);
 
 CREATE TABLE IF NOT EXISTS transcript_tokens (
     id         TEXT PRIMARY KEY,
-    game_id    TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    meeting_id    TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
     seq        INTEGER NOT NULL,
     raw        TEXT NOT NULL,
     normalized TEXT NOT NULL,
@@ -94,31 +94,31 @@ CREATE TABLE IF NOT EXISTS transcript_tokens (
     created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_tokens_game_seq ON transcript_tokens(game_id, seq);
+CREATE INDEX IF NOT EXISTS idx_tokens_meeting_seq ON transcript_tokens(meeting_id, seq);
 
-CREATE TABLE IF NOT EXISTS bingos (
+CREATE TABLE IF NOT EXISTS completions (
     id          TEXT PRIMARY KEY,
-    game_id     TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-    card_id     TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
-    player_id   TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+    meeting_id     TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    grid_id     TEXT NOT NULL REFERENCES grids(id) ON DELETE CASCADE,
+    participant_id   TEXT NOT NULL REFERENCES participants(id) ON DELETE CASCADE,
     pattern     TEXT NOT NULL,            -- row-2 | col-0 | diag-main | corners | blackout
     cells       TEXT NOT NULL DEFAULT '[]',  -- JSON array of positions
-    rank        INTEGER NOT NULL,         -- 1-based order of this line within the game
+    rank        INTEGER NOT NULL,         -- 1-based order of this line within the meeting
     achieved_at TEXT NOT NULL,
-    UNIQUE (card_id, pattern)
+    UNIQUE (grid_id, pattern)
 );
 
-CREATE INDEX IF NOT EXISTS idx_bingos_game ON bingos(game_id, rank);
+CREATE INDEX IF NOT EXISTS idx_completions_meeting ON completions(meeting_id, rank);
 
--- Player-submitted words, judged by an LLM curator (or an admin when no model key
+-- Participant-submitted words, judged by an LLM curator (or an admin when no model key
 -- is configured). Kept even after a decision so the admin console can audit calls.
 CREATE TABLE IF NOT EXISTS word_suggestions (
     id           TEXT PRIMARY KEY,
     text         TEXT NOT NULL,
     text_key     TEXT NOT NULL,
-    game_id      TEXT REFERENCES games(id) ON DELETE SET NULL,
-    player_id    TEXT REFERENCES players(id) ON DELETE SET NULL,
-    player_name  TEXT NOT NULL DEFAULT '',
+    meeting_id      TEXT REFERENCES meetings(id) ON DELETE SET NULL,
+    participant_id    TEXT REFERENCES participants(id) ON DELETE SET NULL,
+    participant_name  TEXT NOT NULL DEFAULT '',
     status       TEXT NOT NULL DEFAULT 'pending',  -- pending | approved | rejected
     verdict      TEXT NOT NULL DEFAULT '',         -- the judge's reasoning
     canonical    TEXT NOT NULL DEFAULT '',         -- corrected spelling, if any

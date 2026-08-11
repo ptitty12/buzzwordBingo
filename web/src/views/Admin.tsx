@@ -1,8 +1,8 @@
 /**
  * Admin console.
  *
- * Everything an operator needs during a live meeting: pool curation, game control,
- * every player's card, a transcript injector for testing, key management and an
+ * Everything an operator needs during a live meeting: pool curation, meeting control,
+ * every participant's grid, a transcript injector for testing, key management and an
  * audit trail.
  */
 
@@ -11,7 +11,7 @@ import { useMemo, useState } from 'react'
 import { api } from '../lib/api'
 import { useAsync, useDebounced } from '../lib/hooks'
 import { useToast } from '../lib/store'
-import { BingoGrid } from '../components/BingoCard'
+import { TermGrid } from '../components/TermGrid'
 import {
   Avatar,
   Difficulty,
@@ -26,16 +26,16 @@ import {
   copyToClipboard,
   relativeTime,
 } from '../components/ui'
-import type { ApiKey, Game, Word } from '../lib/types'
+import type { ApiKey, Meeting, Word } from '../lib/types'
 
 type Tab =
   | 'overview'
   | 'words'
   | 'suggestions'
-  | 'games'
-  | 'cards'
+  | 'meetings'
+  | 'grids'
   | 'feed'
-  | 'players'
+  | 'participants'
   | 'keys'
   | 'audit'
 
@@ -43,10 +43,10 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'words', label: 'Word pool' },
   { id: 'suggestions', label: 'Suggestions' },
-  { id: 'games', label: 'Games' },
-  { id: 'cards', label: 'Cards' },
+  { id: 'meetings', label: 'Meetings' },
+  { id: 'grids', label: 'Grids' },
   { id: 'feed', label: 'Transcript feed' },
-  { id: 'players', label: 'Players' },
+  { id: 'participants', label: 'Participants' },
   { id: 'keys', label: 'API keys' },
   { id: 'audit', label: 'Audit log' },
 ]
@@ -58,7 +58,7 @@ export function Admin({ navigate }: { navigate: (path: string) => void }) {
     <div className="page">
       <div className="page-head">
         <h1>Admin console</h1>
-        <p className="sub">Curate the pool, run the room, and watch every card at once.</p>
+        <p className="sub">Curate the pool, run the room, and watch every grid at once.</p>
       </div>
 
       <div className="tabs" role="tablist">
@@ -78,10 +78,10 @@ export function Admin({ navigate }: { navigate: (path: string) => void }) {
       {tab === 'overview' && <Overview />}
       {tab === 'words' && <WordPool />}
       {tab === 'suggestions' && <Suggestions />}
-      {tab === 'games' && <Games navigate={navigate} />}
-      {tab === 'cards' && <AllCards />}
+      {tab === 'meetings' && <Meetings navigate={navigate} />}
+      {tab === 'grids' && <AllGrids />}
       {tab === 'feed' && <Feed />}
-      {tab === 'players' && <Players />}
+      {tab === 'participants' && <Participants />}
       {tab === 'keys' && <Keys />}
       {tab === 'audit' && <AuditLog />}
     </div>
@@ -107,24 +107,24 @@ function Overview() {
           <span>⚠</span>
           <div>
             <strong>Word judge is offline.</strong> No{' '}
-            <code className="mono">ANTHROPIC_API_KEY</code> is configured, so player word
+            <code className="mono">ANTHROPIC_API_KEY</code> is configured, so participant word
             suggestions queue for your review instead of being decided automatically.
           </div>
         </div>
       )}
 
       <div className="stat-grid">
-        <Stat value={s.players} label="Players" hint="across all games" />
+        <Stat value={s.participants} label="Participants" hint="across all meetings" />
         <Stat
           value={s.active_words}
           label="Active words"
           hint={`${s.words} total in pool`}
           accent="violet"
         />
-        <Stat value={s.live_games} label="Live games" hint={`${s.games} all time`} accent="lime" />
-        <Stat value={s.cards} label="Cards dealt" accent="sky" />
+        <Stat value={s.live_meetings} label="Live meetings" hint={`${s.meetings} all time`} accent="lime" />
+        <Stat value={s.grids} label="Grids dealt" accent="sky" />
         <Stat value={s.tokens.toLocaleString()} label="Words heard" accent="amber" />
-        <Stat value={s.bingos} label="Bingos" accent="rose" />
+        <Stat value={s.completions} label="Lines completed" accent="rose" />
         <Stat
           value={s.pending_suggestions}
           label="Pending words"
@@ -138,14 +138,14 @@ function Overview() {
         <Panel title="Integration" subtitle="Point your transcription pipeline here">
           <p className="dim" style={{ fontSize: 13, marginBottom: 12 }}>
             Post transcript text one word at a time, or in whole sentences — it is tokenised
-            server-side either way. Omit <code className="mono">game_code</code> to broadcast to
-            every live game at once.
+            server-side either way. Omit <code className="mono">meeting_code</code> to broadcast to
+            every live meeting at once.
           </p>
           <pre className="code-block">
 {`curl -X POST http://localhost:8000/api/ingest \\
-  -H `}<span className="s">'X-API-Key: bb_your_key'</span>{` \\
+  -H `}<span className="s">'X-API-Key: jw_your_key'</span>{` \\
   -H `}<span className="s">'Content-Type: application/json'</span>{` \\
-  -d `}<span className="s">{`'{"text": "synergy", "game_code": "DEMO1"}'`}</span>
+  -d `}<span className="s">{`'{"text": "synergy", "meeting_code": "DEMO1"}'`}</span>
           </pre>
           <p className="faint" style={{ fontSize: 12, marginTop: 12 }}>
             Full reference at <a href="/api/docs" target="_blank" rel="noreferrer">/api/docs</a>.
@@ -209,7 +209,7 @@ function WordPool() {
   )
 
   const remove = async (word: Word) => {
-    if (!confirm(`Remove "${word.text}"? Words already on a card are deactivated instead.`)) return
+    if (!confirm(`Remove "${word.text}"? Words already on a grid are deactivated instead.`)) return
     try {
       await api.deleteWord(word.id)
       push({ kind: 'success', title: `"${word.text}" removed` })
@@ -284,7 +284,7 @@ function WordPool() {
                   <th>Category</th>
                   <th>Rarity</th>
                   <th>Aliases</th>
-                  <th>On cards</th>
+                  <th>On grids</th>
                   <th>Status</th>
                   <th />
                 </tr>
@@ -356,14 +356,14 @@ function MatcherPlayground() {
   const matches = result.data?.against?.matches
 
   return (
-    <Panel title="Matcher playground" subtitle="Check whether a spoken word would mark a square">
+    <Panel title="Matcher sandbox" subtitle="Check whether a spoken word would mark a square">
       <div className="row gap-12 wrap">
         <div className="field grow" style={{ minWidth: 160 }}>
           <label className="label" htmlFor="spoken">Spoken word</label>
           <input id="spoken" className="input" value={spoken} onChange={(e) => setSpoken(e.target.value)} />
         </div>
         <div className="field grow" style={{ minWidth: 160 }}>
-          <label className="label" htmlFor="target">Card word</label>
+          <label className="label" htmlFor="target">Grid word</label>
           <input id="target" className="input" value={target} onChange={(e) => setTarget(e.target.value)} />
         </div>
         <div className="field" style={{ minWidth: 110 }}>
@@ -389,7 +389,7 @@ function MatcherPlayground() {
           </dd>
           {result.data.against && (
             <>
-              <dt>Card keys</dt>
+              <dt>Grid keys</dt>
               <dd className="mono" style={{ fontSize: 12, color: 'var(--violet)' }}>
                 {result.data.against.match_keys.join(' · ') || '—'}
               </dd>
@@ -528,7 +528,7 @@ function WordEditor({
           checked={form.active}
           onChange={(event) => setForm({ ...form, active: event.target.checked })}
         />
-        Active — available when players draft cards
+        Active — available when participants draft grids
       </label>
     </Modal>
   )
@@ -601,105 +601,105 @@ function BulkImport({ onClose, onDone }: { onClose: () => void; onDone: () => vo
   )
 }
 
-/* ------------------------------------------------------------------ games */
+/* ------------------------------------------------------------------ meetings */
 
-function Games({ navigate }: { navigate: (path: string) => void }) {
+function Meetings({ navigate }: { navigate: (path: string) => void }) {
   const { push } = useToast()
-  const games = useAsync(() => api.games(), [])
+  const meetings = useAsync(() => api.meetings(), [])
   const [creating, setCreating] = useState(false)
 
   const act = async (label: string, action: () => Promise<unknown>) => {
     try {
       await action()
       push({ kind: 'success', title: label })
-      games.reload()
+      meetings.reload()
     } catch (err) {
       push({ kind: 'error', title: err instanceof Error ? err.message : 'Action failed.' })
     }
   }
 
-  if (games.loading) return <Spinner />
-  if (games.error) return <ErrorNote message={games.error} />
+  if (meetings.loading) return <Spinner />
+  if (meetings.error) return <ErrorNote message={meetings.error} />
 
   return (
     <>
       {creating && (
-        <NewGameModal
+        <NewMeetingModal
           onClose={() => setCreating(false)}
-          onCreated={(game) => {
+          onCreated={(meeting) => {
             setCreating(false)
-            games.reload()
+            meetings.reload()
             push({
               kind: 'success',
-              title: `“${game.name}” is open`,
-              body: `Players join with code ${game.code}.`,
+              title: `“${meeting.name}” is open`,
+              body: `Participants join with code ${meeting.code}.`,
             })
           }}
         />
       )}
       <Panel
-        title={`${games.data?.length ?? 0} games`}
+        title={`${meetings.data?.length ?? 0} meetings`}
         actions={
           <button className="btn btn-primary btn-sm" onClick={() => setCreating(true)}>
-            + New game
+            + New meeting
           </button>
         }
         flush
       >
-      {games.data && games.data.length > 0 ? (
+      {meetings.data && meetings.data.length > 0 ? (
         <div className="table-scroll">
           <table className="table">
             <thead>
               <tr>
-                <th>Game</th><th>Code</th><th>Status</th><th>Players</th>
-                <th>Words</th><th>Bingos</th><th>Created</th><th />
+                <th>Meeting</th><th>Code</th><th>Status</th><th>Participants</th>
+                <th>Words</th><th>Lines</th><th>Created</th><th />
               </tr>
             </thead>
             <tbody>
-              {games.data.map((game) => (
-                <tr key={game.id}>
+              {meetings.data.map((meeting) => (
+                <tr key={meeting.id}>
                   <td>
                     <button
                       className="btn btn-ghost btn-sm"
                       style={{ padding: 0, fontWeight: 600 }}
-                      onClick={() => navigate(`game/${game.id}`)}
+                      onClick={() => navigate(`meeting/${meeting.id}`)}
                     >
-                      {game.name}
+                      {meeting.name}
                     </button>
                   </td>
-                  <td className="mono" style={{ letterSpacing: '.1em', color: 'var(--accent)' }}>{game.code}</td>
-                  <td><StatusBadge status={game.status} /></td>
-                  <td className="mono tnum dim">{game.player_count}</td>
-                  <td className="mono tnum dim">{game.token_count}</td>
-                  <td className="mono tnum dim">{game.bingo_count}</td>
-                  <td className="faint" style={{ fontSize: 12 }}>{relativeTime(game.created_at)}</td>
+                  <td className="mono" style={{ letterSpacing: '.1em', color: 'var(--accent)' }}>{meeting.code}</td>
+                  <td><StatusBadge status={meeting.status} /></td>
+                  <td className="mono tnum dim">{meeting.participant_count}</td>
+                  <td className="mono tnum dim">{meeting.token_count}</td>
+                  <td className="mono tnum dim">{meeting.completion_count}</td>
+                  <td className="faint" style={{ fontSize: 12 }}>{relativeTime(meeting.created_at)}</td>
                   <td>
                     <div className="row gap-4" style={{ justifyContent: 'flex-end' }}>
-                      {game.status !== 'live' && (
+                      {meeting.status !== 'live' && (
                         <button
                           className="btn btn-ghost btn-sm"
-                          onClick={() => act('Game started', () => api.setGameStatus(game.id, 'live'))}
+                          onClick={() => act('Meeting started', () => api.setMeetingStatus(meeting.id, 'live'))}
                         >▶</button>
                       )}
-                      {game.status === 'live' && (
+                      {meeting.status === 'live' && (
                         <button
                           className="btn btn-ghost btn-sm"
-                          onClick={() => act('Game paused', () => api.setGameStatus(game.id, 'paused'))}
+                          onClick={() => act('Meeting paused', () => api.setMeetingStatus(meeting.id, 'paused'))}
                         >‖</button>
                       )}
                       <button
                         className="btn btn-ghost btn-sm"
                         onClick={() => {
-                          if (confirm(`Reset "${game.name}"? Marks, wins and transcript are cleared.`)) {
-                            act('Game reset', () => api.resetGame(game.id))
+                          if (confirm(`Reset "${meeting.name}"? Marks, completed lines and transcript are cleared.`)) {
+                            act('Meeting reset', () => api.resetMeeting(meeting.id))
                           }
                         }}
                       >⟲</button>
                       <button
                         className="btn btn-ghost btn-sm"
                         onClick={() => {
-                          if (confirm(`Delete "${game.name}" permanently? All cards go with it.`)) {
-                            act('Game deleted', () => api.deleteGame(game.id))
+                          if (confirm(`Delete "${meeting.name}" permanently? All grids go with it.`)) {
+                            act('Meeting deleted', () => api.deleteMeeting(meeting.id))
                           }
                         }}
                       >✕</button>
@@ -711,9 +711,9 @@ function Games({ navigate }: { navigate: (path: string) => void }) {
           </table>
         </div>
       ) : (
-        <Empty icon="◫" title="No games yet">
+        <Empty icon="◫" title="No meetings yet">
           <button className="btn btn-primary btn-sm" onClick={() => setCreating(true)}>
-            + New game
+            + New meeting
           </button>
         </Empty>
       )}
@@ -723,20 +723,20 @@ function Games({ navigate }: { navigate: (path: string) => void }) {
 }
 
 /**
- * Opening a game is an administrator-only act, so this lives in the console rather
- * than anywhere a player can reach. The join code is generated server-side — it is
+ * Opening a meeting is an administrator-only act, so this lives in the console rather
+ * than anywhere a participant can reach. The join code is generated server-side — it is
  * what gets read aloud in the meeting, so it avoids I/O/0/1.
  */
-function NewGameModal({
+function NewMeetingModal({
   onClose,
   onCreated,
 }: {
   onClose: () => void
-  onCreated: (game: Game) => void
+  onCreated: (meeting: Meeting) => void
 }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [cardSize, setCardSize] = useState(5)
+  const [gridSize, setGridSize] = useState(5)
   const [freeSpace, setFreeSpace] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -746,15 +746,15 @@ function NewGameModal({
     setBusy(true)
     setError(null)
     try {
-      const game = await api.createGame({
+      const meeting = await api.createMeeting({
         name: name.trim(),
         description: description.trim(),
-        card_size: cardSize,
+        grid_size: gridSize,
         free_space: freeSpace,
       })
-      onCreated(game)
+      onCreated(meeting)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not create the game.')
+      setError(err instanceof Error ? err.message : 'Could not create the meeting.')
     } finally {
       setBusy(false)
     }
@@ -762,7 +762,7 @@ function NewGameModal({
 
   return (
     <Modal
-      title="New game"
+      title="New meeting"
       onClose={onClose}
       footer={
         <>
@@ -772,7 +772,7 @@ function NewGameModal({
             onClick={submit}
             disabled={busy || name.trim().length < 2}
           >
-            {busy ? 'Opening…' : 'Open game'}
+            {busy ? 'Opening…' : 'Open meeting'}
           </button>
         </>
       }
@@ -780,9 +780,9 @@ function NewGameModal({
       {error && <ErrorNote message={error} />}
       <form className="col gap-12" onSubmit={submit}>
         <div className="field">
-          <label className="label" htmlFor="game-name">Name</label>
+          <label className="label" htmlFor="meeting-name">Name</label>
           <input
-            id="game-name"
+            id="meeting-name"
             className="input"
             value={name}
             onChange={(event) => setName(event.target.value)}
@@ -793,9 +793,9 @@ function NewGameModal({
         </div>
 
         <div className="field">
-          <label className="label" htmlFor="game-desc">Description <span className="faint">optional</span></label>
+          <label className="label" htmlFor="meeting-desc">Description <span className="faint">optional</span></label>
           <input
-            id="game-desc"
+            id="meeting-desc"
             className="input"
             value={description}
             onChange={(event) => setDescription(event.target.value)}
@@ -806,12 +806,12 @@ function NewGameModal({
 
         <div className="row gap-16">
           <div className="field grow">
-            <label className="label" htmlFor="game-size">Card size</label>
+            <label className="label" htmlFor="meeting-size">Grid size</label>
             <select
-              id="game-size"
+              id="meeting-size"
               className="select"
-              value={cardSize}
-              onChange={(event) => setCardSize(Number(event.target.value))}
+              value={gridSize}
+              onChange={(event) => setGridSize(Number(event.target.value))}
             >
               {/* Odd sizes only — the free space has to land in the centre. */}
               <option value={3}>3 × 3 — quick</option>
@@ -830,20 +830,20 @@ function NewGameModal({
         </div>
 
         <span className="faint" style={{ fontSize: 11.5 }}>
-          The game opens in the lobby so players can draft cards. Start it when the
-          meeting does — cards lock on the first token.
+          The meeting opens in the open so participants can draft grids. Start it when the
+          meeting does — grids lock on the first token.
         </span>
       </form>
     </Modal>
   )
 }
 
-/* ------------------------------------------------------------------ cards */
+/* ------------------------------------------------------------------ grids */
 
-function AllCards() {
-  const [gameId, setGameId] = useState<string>('')
-  const games = useAsync(() => api.games(), [])
-  const cards = useAsync(() => api.allCards(gameId || undefined), [gameId])
+function AllGrids() {
+  const [meetingId, setMeetingId] = useState<string>('')
+  const meetings = useAsync(() => api.meetings(), [])
+  const grids = useAsync(() => api.allGrids(meetingId || undefined), [meetingId])
 
   return (
     <div className="col gap-16">
@@ -851,39 +851,39 @@ function AllCards() {
         <select
           className="select"
           style={{ width: 'auto', minWidth: 230 }}
-          value={gameId}
-          onChange={(event) => setGameId(event.target.value)}
+          value={meetingId}
+          onChange={(event) => setMeetingId(event.target.value)}
         >
-          <option value="">All games</option>
-          {(games.data ?? []).map((game) => (
-            <option key={game.id} value={game.id}>{game.name} ({game.code})</option>
+          <option value="">All meetings</option>
+          {(meetings.data ?? []).map((meeting) => (
+            <option key={meeting.id} value={meeting.id}>{meeting.name} ({meeting.code})</option>
           ))}
         </select>
         <span className="faint" style={{ fontSize: 12.5, alignSelf: 'center' }}>
-          {cards.data?.length ?? 0} card{cards.data?.length === 1 ? '' : 's'}
+          {grids.data?.length ?? 0} grid{grids.data?.length === 1 ? '' : 's'}
         </span>
       </div>
 
-      {cards.loading && <Spinner />}
-      {cards.error && <ErrorNote message={cards.error} />}
-      {cards.data && cards.data.length === 0 && (
-        <Panel><Empty icon="▦" title="No cards yet">Players build cards from the game room.</Empty></Panel>
+      {grids.loading && <Spinner />}
+      {grids.error && <ErrorNote message={grids.error} />}
+      {grids.data && grids.data.length === 0 && (
+        <Panel><Empty icon="▦" title="No grids yet">Participants build grids from the meeting room.</Empty></Panel>
       )}
 
-      <div className="game-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
-        {(cards.data ?? []).map((card) => (
+      <div className="meeting-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}>
+        {(grids.data ?? []).map((grid) => (
           <Panel
-            key={card.id}
+            key={grid.id}
             title={
               <div className="row gap-8">
-                <Avatar user={card} size="sm" />
-                <span style={{ fontSize: 14, fontWeight: 620 }}>{card.nickname}</span>
+                <Avatar user={grid} size="sm" />
+                <span style={{ fontSize: 14, fontWeight: 620 }}>{grid.nickname}</span>
               </div>
             }
-            subtitle={`${card.marked_count}/${card.cells.length} marked${card.lines.length ? ` · ${card.lines.length} line(s)` : ''}`}
-            actions={card.best_rank === 1 ? <span className="badge badge-accent">★ 1st</span> : undefined}
+            subtitle={`${grid.marked_count}/${grid.cells.length} marked${grid.lines.length ? ` · ${grid.lines.length} line(s)` : ''}`}
+            actions={grid.best_rank === 1 ? <span className="badge badge-accent">★ 1st</span> : undefined}
           >
-            <BingoGrid card={card} compact />
+            <TermGrid grid={grid} compact />
           </Panel>
         ))}
       </div>
@@ -896,17 +896,17 @@ function AllCards() {
 /** Transcript injector — drives the real ingest endpoint, so it exercises the true path. */
 function Feed() {
   const { push } = useToast()
-  const games = useAsync(() => api.games(), [])
+  const meetings = useAsync(() => api.meetings(), [])
   const keys = useAsync(() => api.keys(), [])
 
-  const [gameId, setGameId] = useState('')
+  const [meetingId, setMeetingId] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [text, setText] = useState('')
   const [speaker, setSpeaker] = useState('Test Console')
   const [busy, setBusy] = useState(false)
   const [log, setLog] = useState<string[]>([])
 
-  const live = (games.data ?? []).filter((game) => game.status === 'live')
+  const live = (meetings.data ?? []).filter((meeting) => meeting.status === 'live')
 
   const send = async (event?: React.FormEvent) => {
     event?.preventDefault()
@@ -915,20 +915,20 @@ function Feed() {
     setBusy(true)
     try {
       const result = await api.ingest(
-        { text: body, game_id: gameId || undefined, speaker, source: 'admin-console' },
+        { text: body, meeting_id: meetingId || undefined, speaker, source: 'admin-console' },
         apiKey,
       )
-      const hits = (result.results as { hits: unknown[]; bingos: unknown[] }[])
+      const hits = (result.results as { hits: unknown[]; completions: unknown[] }[])
         .reduce((sum, entry) => sum + entry.hits.length, 0)
-      const bingos = (result.results as { hits: unknown[]; bingos: unknown[] }[])
-        .reduce((sum, entry) => sum + entry.bingos.length, 0)
+      const completions = (result.results as { hits: unknown[]; completions: unknown[] }[])
+        .reduce((sum, entry) => sum + entry.completions.length, 0)
 
       setLog((current) => [
-        `${clockTime(new Date().toISOString())}  ${result.token_count} token(s) → ${hits} hit(s)${bingos ? `, ${bingos} BINGO` : ''}`,
+        `${clockTime(new Date().toISOString())}  ${result.token_count} token(s) → ${hits} hit(s)${completions ? `, ${completions} line(s) completed` : ''}`,
         ...current.slice(0, 40),
       ])
       setText('')
-      if (bingos > 0) push({ kind: 'bingo', title: `${bingos} bingo triggered` })
+      if (completions > 0) push({ kind: 'completion', title: `${completions} completed` })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Ingest failed.'
       setLog((current) => [`${clockTime(new Date().toISOString())}  ✕ ${message}`, ...current.slice(0, 40)])
@@ -947,24 +947,24 @@ function Feed() {
         {live.length === 0 && (
           <div className="banner" style={{ marginBottom: 14 }}>
             <span>⚠</span>
-            <div>No games are live. Start one before sending transcript, or it will be rejected.</div>
+            <div>No meetings are live. Start one before sending transcript, or it will be rejected.</div>
           </div>
         )}
 
         <form className="col gap-12" onSubmit={send}>
           <div className="row gap-12 wrap">
             <div className="field grow" style={{ minWidth: 180 }}>
-              <label className="label" htmlFor="feed-game">Target</label>
+              <label className="label" htmlFor="feed-meeting">Target</label>
               <select
-                id="feed-game"
+                id="feed-meeting"
                 className="select"
-                value={gameId}
-                onChange={(event) => setGameId(event.target.value)}
+                value={meetingId}
+                onChange={(event) => setMeetingId(event.target.value)}
               >
-                <option value="">All live games (broadcast)</option>
-                {(games.data ?? []).map((game) => (
-                  <option key={game.id} value={game.id}>
-                    {game.name} ({game.code}) — {game.status}
+                <option value="">All live meetings (broadcast)</option>
+                {(meetings.data ?? []).map((meeting) => (
+                  <option key={meeting.id} value={meeting.id}>
+                    {meeting.name} ({meeting.code}) — {meeting.status}
                   </option>
                 ))}
               </select>
@@ -987,7 +987,7 @@ function Feed() {
               className="input mono"
               value={apiKey}
               onChange={(event) => setApiKey(event.target.value)}
-              placeholder="bb_…"
+              placeholder="jw_…"
               autoComplete="off"
             />
             <span className="faint" style={{ fontSize: 11.5 }}>
@@ -1014,7 +1014,7 @@ function Feed() {
 
           <div className="row gap-8">
             <button className="btn btn-primary" type="submit" disabled={busy || !text.trim()}>
-              {busy ? 'Sending…' : 'Send to game'}
+              {busy ? 'Sending…' : 'Send to meeting'}
             </button>
             <span className="faint" style={{ fontSize: 11.5 }}>⌘/Ctrl + Enter</span>
           </div>
@@ -1038,22 +1038,22 @@ function Feed() {
   )
 }
 
-/* ------------------------------------------------------------------ players */
+/* ------------------------------------------------------------------ participants */
 
-function Players() {
+function Participants() {
   const { push } = useToast()
-  const [gameId, setGameId] = useState('')
-  const games = useAsync(() => api.games(), [])
-  const players = useAsync(() => api.players(gameId || undefined), [gameId])
+  const [meetingId, setMeetingId] = useState('')
+  const meetings = useAsync(() => api.meetings(), [])
+  const participants = useAsync(() => api.participants(meetingId || undefined), [meetingId])
 
-  const gameName = (id: string) => games.data?.find((g) => g.id === id)?.name ?? '—'
+  const meetingName = (id: string) => meetings.data?.find((g) => g.id === id)?.name ?? '—'
 
   const remove = async (id: string, nickname: string) => {
-    if (!confirm(`Remove "${nickname}" and their card from this game?`)) return
+    if (!confirm(`Remove "${nickname}" and their grid from this meeting?`)) return
     try {
-      await api.removePlayer(id)
+      await api.removeParticipant(id)
       push({ kind: 'success', title: `${nickname} removed` })
-      players.reload()
+      participants.reload()
     } catch (err) {
       push({ kind: 'error', title: err instanceof Error ? err.message : 'Remove failed.' })
     }
@@ -1065,33 +1065,33 @@ function Players() {
         <select
           className="select"
           style={{ width: 'auto', minWidth: 230 }}
-          value={gameId}
-          onChange={(event) => setGameId(event.target.value)}
+          value={meetingId}
+          onChange={(event) => setMeetingId(event.target.value)}
         >
-          <option value="">All games</option>
-          {(games.data ?? []).map((game) => (
-            <option key={game.id} value={game.id}>{game.name} ({game.code})</option>
+          <option value="">All meetings</option>
+          {(meetings.data ?? []).map((meeting) => (
+            <option key={meeting.id} value={meeting.id}>{meeting.name} ({meeting.code})</option>
           ))}
         </select>
         <span className="faint" style={{ fontSize: 12.5, alignSelf: 'center' }}>
-          Players exist only inside the game they joined — there are no accounts.
+          Participants exist only inside the meeting they joined — there are no accounts.
         </span>
       </div>
 
-      <Panel title={`${players.data?.length ?? 0} players`} flush>
-        {players.loading && <Spinner />}
-        {players.error && <div style={{ padding: 16 }}><ErrorNote message={players.error} /></div>}
-        {players.data && players.data.length === 0 && (
+      <Panel title={`${participants.data?.length ?? 0} participants`} flush>
+        {participants.loading && <Spinner />}
+        {participants.error && <div style={{ padding: 16 }}><ErrorNote message={participants.error} /></div>}
+        {participants.data && participants.data.length === 0 && (
           <Empty icon="◌" title="Nobody has joined yet" />
         )}
-        {players.data && players.data.length > 0 && (
+        {participants.data && participants.data.length > 0 && (
           <div className="table-scroll">
             <table className="table">
               <thead>
-                <tr><th>Nickname</th><th>Game</th><th>Joined</th><th>Last seen</th><th /></tr>
+                <tr><th>Nickname</th><th>Meeting</th><th>Joined</th><th>Last seen</th><th /></tr>
               </thead>
               <tbody>
-                {players.data.map((entry) => (
+                {participants.data.map((entry) => (
                   <tr key={entry.id}>
                     <td>
                       <div className="row gap-8">
@@ -1099,7 +1099,7 @@ function Players() {
                         <span style={{ fontWeight: 570 }}>{entry.nickname}</span>
                       </div>
                     </td>
-                    <td className="dim">{gameName(entry.game_id)}</td>
+                    <td className="dim">{meetingName(entry.meeting_id)}</td>
                     <td className="faint" style={{ fontSize: 12 }}>{relativeTime(entry.created_at)}</td>
                     <td className="faint" style={{ fontSize: 12 }}>{relativeTime(entry.last_seen_at)}</td>
                     <td style={{ textAlign: 'right' }}>
@@ -1122,7 +1122,7 @@ function Players() {
 /* ------------------------------------------------------------------ suggestions */
 
 /**
- * Player word submissions and what the judge made of them. Every verdict is
+ * Participant word submissions and what the judge made of them. Every verdict is
  * overridable — the model curates, the admin decides.
  */
 function Suggestions() {
@@ -1173,7 +1173,7 @@ function Suggestions() {
 
       <Panel
         title={`${suggestions.data?.length ?? 0} submissions`}
-        subtitle="Players propose words; the AI curator decides whether they are buzzwordy enough"
+        subtitle="Participants propose words; the AI curator decides whether they are buzzwordy enough"
         flush
       >
         {suggestions.loading && <Spinner />}
@@ -1182,7 +1182,7 @@ function Suggestions() {
         )}
         {suggestions.data && suggestions.data.length === 0 && (
           <Empty icon="✦" title="No submissions yet">
-            Players can propose words from inside a game.
+            Participants can propose words from inside a meeting.
           </Empty>
         )}
         {suggestions.data && suggestions.data.length > 0 && (
@@ -1190,7 +1190,7 @@ function Suggestions() {
             <table className="table">
               <thead>
                 <tr>
-                  <th>Word</th><th>Player</th><th>Verdict</th>
+                  <th>Word</th><th>Participant</th><th>Verdict</th>
                   <th>Judge</th><th>When</th><th>Status</th><th />
                 </tr>
               </thead>
@@ -1205,7 +1205,7 @@ function Suggestions() {
                         </div>
                       )}
                     </td>
-                    <td className="dim">{entry.player_name || '—'}</td>
+                    <td className="dim">{entry.participant_name || '—'}</td>
                     <td className="dim" style={{ fontSize: 12.5, maxWidth: 280 }}>
                       {entry.verdict || '—'}
                     </td>

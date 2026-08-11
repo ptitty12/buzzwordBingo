@@ -1,8 +1,8 @@
 /**
  * The nickname gate.
  *
- * Shown when you open a game you have not joined. This is the entire "sign-up": a
- * nickname, an optional glyph and colour, and you are in — scoped to this game only.
+ * Shown when you open a meeting you have not joined. This is the entire "sign-up": a
+ * nickname, an optional glyph and colour, and you are in — scoped to this meeting only.
  */
 
 import { useState } from 'react'
@@ -10,7 +10,7 @@ import { useState } from 'react'
 import { api } from '../lib/api'
 import { useSession, useToast } from '../lib/store'
 import { ErrorNote, StatusBadge } from '../components/ui'
-import type { Accent, Game } from '../lib/types'
+import type { Accent, Meeting } from '../lib/types'
 
 const ACCENTS: Accent[] = ['green', 'teal', 'cyan', 'violet', 'amber', 'lime', 'rose', 'sky']
 const ACCENT_HEX: Record<Accent, string> = {
@@ -26,15 +26,15 @@ const ACCENT_HEX: Record<Accent, string> = {
 const AVATARS = ['◆', '◇', '▲', '△', '●', '○', '■', '□', '★', '✦', '⬢', '⬡']
 
 export function Join({
-  game,
+  meeting,
   onJoined,
   onBack,
 }: {
-  game: Game
+  meeting: Meeting
   onJoined: () => void
   onBack: () => void
 }) {
-  const { joinedGame } = useSession()
+  const { joinedMeeting } = useSession()
   const { push } = useToast()
 
   const [nickname, setNickname] = useState('')
@@ -48,12 +48,12 @@ export function Join({
     setError(null)
     setBusy(true)
     try {
-      const session = await api.join(game.id, { nickname: nickname.trim(), avatar, accent })
-      joinedGame(game.id, session.token, session.player)
+      const session = await api.join(meeting.id, { nickname: nickname.trim(), avatar, accent })
+      joinedMeeting(meeting.id, session.token, session.participant)
       push({
         kind: 'success',
-        title: `You're in, ${session.player.nickname}`,
-        body: 'Draft a card to start playing.',
+        title: `You're in, ${session.participant.nickname}`,
+        body: 'Draft a grid to get started.',
       })
       onJoined()
     } catch (err) {
@@ -64,20 +64,20 @@ export function Join({
   }
 
   return (
-    <div className="login-shell" data-accent={accent}>
-      <div className="login-card">
-        <div className="login-hero">
+    <div className="gate-shell" data-accent={accent}>
+      <div className="gate-panel">
+        <div className="gate-hero">
           <div className="brand-mark" aria-hidden="true">
             <i /><i /><i /><i />
           </div>
-          <h1>{game.name}</h1>
+          <h1>{meeting.name}</h1>
           <div className="row gap-8" style={{ justifyContent: 'center', marginTop: 10 }}>
             <span className="mono" style={{ color: 'var(--accent)', letterSpacing: '.16em' }}>
-              {game.code}
+              {meeting.code}
             </span>
-            <StatusBadge status={game.status} />
+            <StatusBadge status={meeting.status} />
             <span className="faint" style={{ fontSize: 12 }}>
-              {game.player_count} player{game.player_count === 1 ? '' : 's'}
+              {meeting.participant_count} participant{meeting.participant_count === 1 ? '' : 's'}
             </span>
           </div>
         </div>
@@ -100,7 +100,7 @@ export function Join({
                   autoComplete="off"
                 />
                 <span className="faint" style={{ fontSize: 11.5 }}>
-                  Just for this game. Use the same nickname later to pick your card back up.
+                  Just for this meeting. Use the same nickname later to pick your grid back up.
                 </span>
               </div>
 
@@ -149,7 +149,7 @@ export function Join({
         </div>
 
         <p style={{ textAlign: 'center', marginTop: 16 }}>
-          <button className="btn btn-ghost btn-sm" onClick={onBack}>← All games</button>
+          <button className="btn btn-ghost btn-sm" onClick={onBack}>← All meetings</button>
         </p>
       </div>
     </div>

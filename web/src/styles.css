@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Buzzword Bingo — design system
+   Jargon Watch — design system
    Dark "mission control" surface: near-black ground, glass panels, one neon
    accent per context. Enterprise density, arcade payoff.
    ========================================================================== */
@@ -19,7 +19,7 @@
   --text-dim: #97a3b6;
   --text-faint: #5d6b80;
 
-  /* accents — green leads, everything else is a player-selectable alternative */
+  /* accents — green leads, everything else is a participant-selectable alternative */
   --green: #3fcf8e;
   --teal: #2dd4bf;
   --cyan: #22d3ee;
@@ -283,7 +283,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   white-space: nowrap;
 }
 .badge-live    { color: var(--success); border-color: rgba(52,211,153,.36); background: rgba(52,211,153,.11); }
-.badge-lobby   { color: var(--sky);     border-color: rgba(56,189,248,.34);  background: rgba(56,189,248,.1); }
+.badge-open   { color: var(--sky);     border-color: rgba(56,189,248,.34);  background: rgba(56,189,248,.1); }
 .badge-paused  { color: var(--warning); border-color: rgba(251,191,36,.34);  background: rgba(251,191,36,.1); }
 .badge-ended   { color: var(--text-faint); }
 .badge-accent  { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
@@ -378,9 +378,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .stat .stat-label { margin-top: 2px; }
 .stat .stat-hint { font-size: 11.5px; color: var(--text-faint); margin-top: 3px; }
 
-/* --------------------------------------------------------------- bingo card */
+/* --------------------------------------------------------------- completion grid */
 
-.card-grid {
+.term-grid {
   display: grid;
   gap: 7px;
   aspect-ratio: 1;
@@ -443,7 +443,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-weight: 700;
 }
 
-.cell.winning {
+.cell.completed {
   animation: winPulse 1.5s ease-in-out infinite;
   border-color: var(--amber);
   color: var(--amber);
@@ -459,7 +459,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   100% { transform: scale(1); }
 }
 
-/* Selectable cells in the card builder. */
+/* Selectable cells in the grid builder. */
 .cell.pick { cursor: pointer; }
 .cell.pick:hover { border-color: var(--border-strong); background: var(--surface-2); color: var(--text); }
 .cell.empty { border-style: dashed; color: var(--text-faint); background: transparent; }
@@ -486,7 +486,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 
 /* Type scales with the square itself, so a 25-square admin thumbnail and a full-size
-   play card are both legible without a separate "compact" variant.
+   play grid are both legible without a separate "compact" variant.
    These target `.cell span`, not `.cell`: an element cannot query the container it
    declares itself, only its descendants can. */
 @container (max-width: 78px) {
@@ -545,7 +545,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   to { transform: none; opacity: 1; }
 }
 
-/* --------------------------------------------------------------- leaderboard */
+/* --------------------------------------------------------------- standings */
 
 .lb { display: flex; flex-direction: column; }
 .lb-row {
@@ -694,8 +694,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .toast.error { border-color: rgba(248,113,113,.44); }
 .toast.error .toast-icon { color: var(--danger); }
 .toast.success .toast-icon { color: var(--success); }
-.toast.bingo { border-color: rgba(251,191,36,.5); background: rgba(30, 22, 8, .97); }
-.toast.bingo .toast-icon { color: var(--amber); }
+.toast.completion { border-color: rgba(251,191,36,.5); background: rgba(30, 22, 8, .97); }
+.toast.completion .toast-icon { color: var(--amber); }
 .toast-icon { font-size: 15px; line-height: 1.35; flex: none; }
 .toast-title { font-weight: 640; }
 .toast-body { color: var(--text-dim); font-size: 12.5px; margin-top: 1px; }
@@ -733,12 +733,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* --------------------------------------------------------------- login */
 
-.login-shell { min-height: 100vh; display: grid; place-items: center; padding: 26px; }
-.login-card { width: 100%; max-width: 424px; }
-.login-hero { text-align: center; margin-bottom: 26px; }
-.login-hero .brand-mark { width: 52px; height: 52px; border-radius: 15px; padding: 9px; margin: 0 auto 15px; }
-.login-hero h1 { font-size: 30px; letter-spacing: -0.032em; }
-.login-hero .tag {
+.gate-shell { min-height: 100vh; display: grid; place-items: center; padding: 26px; }
+.gate-panel { width: 100%; max-width: 424px; }
+.gate-hero { text-align: center; margin-bottom: 26px; }
+.gate-hero .brand-mark { width: 52px; height: 52px; border-radius: 15px; padding: 9px; margin: 0 auto 15px; }
+.gate-hero h1 { font-size: 30px; letter-spacing: -0.032em; }
+.gate-hero .tag {
   margin-top: 8px;
   color: var(--text-dim);
   font-size: 13.5px;
@@ -783,11 +783,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .avatar-opt:hover { border-color: var(--border-strong); }
 .avatar-opt.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 
-/* --------------------------------------------------------------- game cards */
+/* --------------------------------------------------------------- meeting grids */
 
-.game-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
+.meeting-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
 
-.game-card {
+.meeting-tile {
   padding: 17px;
   border-radius: var(--r-lg);
   border: 1px solid var(--border);
@@ -802,15 +802,15 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font: inherit;
   color: inherit;
 }
-.game-card:hover { border-color: var(--accent-line); transform: translateY(-2px); box-shadow: 0 16px 40px -22px var(--accent); }
-.game-card .code {
+.meeting-tile:hover { border-color: var(--accent-line); transform: translateY(-2px); box-shadow: 0 16px 40px -22px var(--accent); }
+.meeting-tile .code {
   font-family: var(--mono);
   font-size: 17px;
   font-weight: 700;
   letter-spacing: .16em;
   color: var(--accent);
 }
-.game-card .game-stats { display: flex; gap: 15px; font-size: 11.5px; color: var(--text-faint); font-family: var(--mono); }
+.meeting-tile .meeting-stats { display: flex; gap: 15px; font-size: 11.5px; color: var(--text-faint); font-family: var(--mono); }
 
 /* --------------------------------------------------------------- misc */
 
@@ -871,7 +871,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .sticky-side { position: sticky; top: calc(var(--header-h) + 18px); display: flex; flex-direction: column; gap: 18px; }
 
-/* Full-screen bingo celebration. */
+/* Full-screen completion celebration. */
 .celebrate {
   position: fixed;
   inset: 0;
@@ -916,10 +916,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .hide-sm { display: none; }
   .nav a { padding: 6px 9px; font-size: 12.5px; }
   h1 { font-size: 21px; }
-  .card-grid { gap: 5px; }
+  .term-grid { gap: 5px; }
   .cell { font-size: 9.5px; padding: 4px 2px; border-radius: 7px; }
   .stat .stat-value { font-size: 21px; }
-  .game-grid { grid-template-columns: 1fr; }
+  .meeting-grid { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

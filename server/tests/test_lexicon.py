@@ -47,9 +47,22 @@ class TestStemSymmetry:
     @pytest.mark.parametrize(
         "word",
         [
-            "synergy", "leverage", "disrupt", "bandwidth", "alignment", "pivot",
-            "scalable", "holistic", "paradigm", "ideate", "roadmap", "blockers",
-            "circle back", "low hanging fruit", "move the needle", "deep dive",
+            "synergy",
+            "leverage",
+            "disrupt",
+            "bandwidth",
+            "alignment",
+            "pivot",
+            "scalable",
+            "holistic",
+            "paradigm",
+            "ideate",
+            "roadmap",
+            "blockers",
+            "circle back",
+            "low hanging fruit",
+            "move the needle",
+            "deep dive",
         ],
     )
     def test_word_matches_itself(self, word):

@@ -1,9 +1,9 @@
-/** Shared hooks: hash routing, the game WebSocket, and async data loading. */
+/** Shared hooks: hash routing, the meeting WebSocket, and async data loading. */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { currentToken } from './api'
-import type { GameEvent } from './types'
+import type { MeetingEvent } from './types'
 
 /* ------------------------------------------------------------------ routing */
 
@@ -36,19 +36,19 @@ export function useRoute(): [string[], (path: string) => void] {
 export type SocketStatus = 'connecting' | 'open' | 'closed'
 
 /**
- * Subscribe to a game's event stream.
+ * Subscribe to a meeting's event stream.
  *
  * Reconnects with exponential backoff, and pings every 25s so intermediaries do not
  * reap an idle connection. The handler is held in a ref so callers can pass an inline
  * closure without forcing a reconnect on every render.
  */
-export function useGameSocket(gameId: string | null, onEvent: (event: GameEvent) => void) {
+export function useMeetingSocket(meetingId: string | null, onEvent: (event: MeetingEvent) => void) {
   const [status, setStatus] = useState<SocketStatus>('closed')
   const handlerRef = useRef(onEvent)
   handlerRef.current = onEvent
 
   useEffect(() => {
-    if (!gameId) {
+    if (!meetingId) {
       setStatus('closed')
       return
     }
@@ -65,7 +65,7 @@ export function useGameSocket(gameId: string | null, onEvent: (event: GameEvent)
 
       const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
       const token = currentToken() ?? ''
-      const url = `${protocol}://${window.location.host}/ws/games/${gameId}?token=${encodeURIComponent(token)}`
+      const url = `${protocol}://${window.location.host}/ws/meetings/${meetingId}?token=${encodeURIComponent(token)}`
 
       socket = new WebSocket(url)
 
@@ -78,7 +78,7 @@ export function useGameSocket(gameId: string | null, onEvent: (event: GameEvent)
 
       socket.onmessage = (message) => {
         try {
-          handlerRef.current(JSON.parse(message.data) as GameEvent)
+          handlerRef.current(JSON.parse(message.data) as MeetingEvent)
         } catch {
           /* ignore malformed frames rather than tearing down the stream */
         }
@@ -103,7 +103,7 @@ export function useGameSocket(gameId: string | null, onEvent: (event: GameEvent)
       if (retry) clearTimeout(retry)
       socket?.close()
     }
-  }, [gameId])
+  }, [meetingId])
 
   return status
 }

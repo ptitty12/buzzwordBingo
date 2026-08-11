@@ -21,18 +21,18 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "Buzzword Bingo"
+    app_name: str = "Jargon Watch"
     environment: str = "development"
     host: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "INFO"
 
     #: SQLite database location. Use ":memory:" for ephemeral test runs.
-    database_url: str = str(SERVER_ROOT / "data" / "bingo.db")
+    database_url: str = str(SERVER_ROOT / "data" / "jargon.db")
 
     #: Signing secret for session tokens. When unset, a key is generated once and
     #: persisted next to the database (see `_resolve_secret_key`) so restarts do not
-    #: silently sign every player out. Set it explicitly in any real deployment.
+    #: silently sign every participant out. Set it explicitly in any real deployment.
     secret_key: str = ""
 
     #: Browser origins allowed to call the API.
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     #: When true, /api/ingest requires a valid X-API-Key header.
     ingest_require_key: bool = True
 
-    #: Gate the OpenAPI docs behind HTTP Basic using the admin PIN, so players poking
+    #: Gate the OpenAPI docs behind HTTP Basic using the admin PIN, so participants poking
     #: around the site never land on the integration surface.
     protect_api_docs: bool = True
 
@@ -56,20 +56,20 @@ class Settings(BaseSettings):
     #: Max transcript tokens accepted in a single ingest request.
     max_ingest_tokens: int = 400
 
-    #: Rolling n-gram window retained per game for multi-word phrase detection.
+    #: Rolling n-gram window retained per meeting for multi-word phrase detection.
     phrase_window: int = 8
 
     # ----------------------------------------------------------------- word moderation
 
-    #: Anthropic API key for the buzzword judge. Without it, player suggestions queue
+    #: Anthropic API key for the buzzword judge. Without it, participant suggestions queue
     #: for manual admin review instead of being auto-decided.
     anthropic_api_key: str = ""
 
     #: Model used to judge whether a suggested word is "buzzwordy enough".
     moderation_model: str = "claude-opus-5"
 
-    #: How many words a single player may suggest per game.
-    suggestions_per_player: int = 10
+    #: How many words a single participant may suggest per meeting.
+    suggestions_per_participant: int = 10
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -88,12 +88,12 @@ def _resolve_secret_key(database_url: str) -> str:
     """Return a signing key that survives a restart, generating one on first boot.
 
     A per-process key looks harmless until you restart: every token ever issued stops
-    verifying at once, and players who are mid-draft get "Join a game to continue." with
+    verifying at once, and participants who are mid-draft get "Join a meeting to continue." with
     no idea why. In development that fires on something as innocuous as editing .env,
     because autoreload restarts the process. So the generated key is written next to the
     database and reused, which makes a restart invisible to everyone holding a session.
 
-    An explicit SECRET_KEY always wins; this only covers the unset case.
+    An explicit SECRET_KEY always completions; this only covers the unset case.
     """
     if database_url == ":memory:":
         return secrets.token_urlsafe(32)  # nothing to persist alongside
@@ -114,7 +114,7 @@ def _resolve_secret_key(database_url: str) -> str:
     except OSError:
         # Read-only filesystem: degrade to an ephemeral key rather than refusing to
         # boot. Deployments in that shape should be setting SECRET_KEY anyway.
-        logging.getLogger("bingo").warning(
+        logging.getLogger("jargon").warning(
             "Could not persist a generated SECRET_KEY at %s — sessions will not "
             "survive a restart. Set SECRET_KEY explicitly.",
             path,

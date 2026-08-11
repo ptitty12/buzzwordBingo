@@ -1,11 +1,11 @@
-/** The bingo grid, plus the live ticker and leaderboard that surround it. */
+/** The term grid, plus the live ticker and standings that surround it. */
 
 import { useEffect, useRef, useState } from 'react'
 
 import { Avatar } from './ui'
-import type { Card, CardCell, LeaderboardEntry, TranscriptToken } from '../lib/types'
+import type { Grid, GridCell, StandingsEntry, TranscriptToken } from '../lib/types'
 
-/** Positions belonging to a completed pattern, so winning lines can glow. */
+/** Positions belonging to a completed pattern, so completed lines can glow. */
 function patternPositions(pattern: string, size: number): number[] {
   if (pattern.startsWith('row-')) {
     const row = Number(pattern.slice(4))
@@ -22,15 +22,15 @@ function patternPositions(pattern: string, size: number): number[] {
   return []
 }
 
-export function BingoGrid({
-  card,
+export function TermGrid({
+  grid,
   onCellClick,
   interactive = false,
   compact = false,
   onSwap,
 }: {
-  card: Card
-  onCellClick?: (cell: CardCell) => void
+  grid: Grid
+  onCellClick?: (cell: GridCell) => void
   interactive?: boolean
   compact?: boolean
   /**
@@ -39,8 +39,8 @@ export function BingoGrid({
    */
   onSwap?: (from: number, to: number) => void
 }) {
-  const size = card.card_size
-  const winning = new Set(card.lines.flatMap((pattern) => patternPositions(pattern, size)))
+  const size = grid.grid_size
+  const completed = new Set(grid.lines.flatMap((pattern) => patternPositions(pattern, size)))
 
   // Arrange mode has two ways in, because HTML5 drag-and-drop does not fire on touch:
   // drag a square onto another, or tap one then tap its destination.
@@ -48,7 +48,7 @@ export function BingoGrid({
   const [over, setOver] = useState<number | null>(null)
   const [picked, setPicked] = useState<number | null>(null)
 
-  const swappable = (cell: CardCell) => Boolean(onSwap) && !cell.is_free && cell.text !== ''
+  const swappable = (cell: GridCell) => Boolean(onSwap) && !cell.is_free && cell.text !== ''
 
   const commit = (from: number, to: number) => {
     if (from !== to) onSwap?.(from, to)
@@ -57,17 +57,17 @@ export function BingoGrid({
     setPicked(null)
   }
 
-  const tap = (cell: CardCell) => {
+  const tap = (cell: GridCell) => {
     if (picked === null) setPicked(cell.position)
     else commit(picked, cell.position)
   }
 
   // Track which squares flipped since the last render so they can pop once.
-  const previous = useRef<Set<string>>(new Set(card.cells.filter((c) => c.marked).map((c) => c.id)))
+  const previous = useRef<Set<string>>(new Set(grid.cells.filter((c) => c.marked).map((c) => c.id)))
   const [recent, setRecent] = useState<Set<string>>(new Set())
 
   useEffect(() => {
-    const nowMarked = new Set(card.cells.filter((cell) => cell.marked).map((cell) => cell.id))
+    const nowMarked = new Set(grid.cells.filter((cell) => cell.marked).map((cell) => cell.id))
     const fresh = [...nowMarked].filter((id) => !previous.current.has(id))
     previous.current = nowMarked
     if (fresh.length === 0) return
@@ -75,21 +75,21 @@ export function BingoGrid({
     setRecent(new Set(fresh))
     const timer = setTimeout(() => setRecent(new Set()), 600)
     return () => clearTimeout(timer)
-  }, [card.cells])
+  }, [grid.cells])
 
   return (
     <div
-      className="card-grid"
+      className="term-grid"
       style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))`, gap: compact ? 3 : undefined }}
       role="grid"
-      aria-label={`${card.nickname}'s bingo card`}
+      aria-label={`${grid.nickname}'s term grid`}
     >
-      {card.cells.map((cell) => {
+      {grid.cells.map((cell) => {
         const canSwap = swappable(cell)
         const classes = ['cell']
         if (cell.is_free) classes.push('free')
         if (cell.marked) classes.push('marked')
-        if (winning.has(cell.position)) classes.push('winning')
+        if (completed.has(cell.position)) classes.push('completed')
         if (recent.has(cell.id)) classes.push('just-marked')
         if (interactive) classes.push('pick')
         if (canSwap) classes.push('draggable')
@@ -134,7 +134,7 @@ export function BingoGrid({
                   }
                 : undefined
             }
-            data-accent={card.accent}
+            data-accent={grid.accent}
           >
             <span>{cell.text}</span>
           </div>
@@ -174,12 +174,12 @@ export function Ticker({ tokens }: { tokens: TranscriptToken[] }) {
   )
 }
 
-export function Leaderboard({
+export function Standings({
   entries,
   meId,
-  emptyLabel = 'No players yet.',
+  emptyLabel = 'No participants yet.',
 }: {
-  entries: LeaderboardEntry[]
+  entries: StandingsEntry[]
   meId?: string
   emptyLabel?: string
 }) {
@@ -193,11 +193,11 @@ export function Leaderboard({
         const percent = entry.total > 0 ? Math.round((entry.marked / entry.total) * 100) : 0
         const champion = entry.best_rank === 1
         const classes = ['lb-row']
-        if (entry.player_id === meId) classes.push('is-me')
+        if (entry.participant_id === meId) classes.push('is-me')
         if (champion) classes.push('champion')
 
         return (
-          <div key={entry.card_id} className={classes.join(' ')} data-accent={entry.accent}>
+          <div key={entry.grid_id} className={classes.join(' ')} data-accent={entry.accent}>
             <div className="lb-rank">{champion ? '★' : entry.position}</div>
             <div style={{ minWidth: 0 }}>
               <div className="row gap-8">
@@ -224,12 +224,12 @@ export function Leaderboard({
   )
 }
 
-/** Full-screen celebration when the signed-in player completes a line. */
+/** Full-screen celebration when the signed-in participant completes a line. */
 export function Celebration({ label, who }: { label: string; who: string }) {
   return (
     <div className="celebrate">
       <div>
-        <div className="word">BINGO</div>
+        <div className="word">FULL LINE</div>
         <div className="who">
           {who} — {label}
         </div>

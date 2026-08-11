@@ -1,8 +1,8 @@
 {
-  "name": "buzzword-bingo",
+  "name": "jargon-watch",
   "version": "1.0.0",
   "private": true,
-  "description": "Buzzword Bingo — real-time, transcript-driven bingo for meetings that could have been an email.",
+  "description": "Jargon Watch — real-time, transcript-driven jargon tracking for meetings that could have been an email.",
   "license": "MIT",
   "workspaces": [
     "web"

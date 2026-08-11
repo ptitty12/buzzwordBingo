@@ -1,7 +1,7 @@
 """The buzzword pool.
 
-Reads are open to any joined player (they need the pool to build a card). Direct
-mutation is admin-only. Players influence the pool through :func:`suggest_word`, which
+Reads are open to any joined participant (they need the pool to build a grid). Direct
+mutation is admin-only. Participants influence the pool through :func:`suggest_word`, which
 routes the submission to an LLM curator that decides whether it is buzzwordy enough.
 """
 
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/api/words", tags=["words"])
 
 WORD_SELECT = """
 SELECT w.*,
-       (SELECT COUNT(*) FROM card_cells c WHERE c.word_id = w.id) AS usage_count
+       (SELECT COUNT(*) FROM grid_cells c WHERE c.word_id = w.id) AS usage_count
 FROM words w
 """
 
@@ -43,7 +43,7 @@ def list_words(
     search: str | None = Query(default=None),
     _identity: Identity = Depends(require_identity),
 ) -> list[WordPublic]:
-    """The word pool players draft from."""
+    """The word pool participants draft from."""
     clauses, params = [], []
     if not include_inactive:
         clauses.append("w.active = 1")
@@ -77,38 +77,39 @@ def suggest_word(
     The submission goes to an LLM curator which decides whether it is genuine jargon
     ("business fundamentals" — yes) or ordinary vocabulary ("sales" — no). An approved
     word is added to the live pool straight away, filed under the category and rarity
-    the judge assigned, with the player's original spelling kept as an alias.
+    the judge assigned, with the participant's original spelling kept as an alias.
 
     When no model is configured the suggestion is queued for an administrator rather
     than being auto-approved.
     """
     settings = get_settings()
-    player = identity.player
-    player_name = identity.display_name
+    participant = identity.participant
+    participant_name = identity.display_name
 
-    # Proposing is part of drafting. Once a card is locked in, a new word could only ever
-    # land on someone else's card, so the door closes with the card.
-    if player is not None and query_one(
-        "SELECT id FROM cards WHERE game_id = ? AND player_id = ?",
-        (player["game_id"], player["id"]),
+    # Proposing is part of drafting. Once a grid is locked in, a new word could only ever
+    # land on someone else's grid, so the door closes with the grid.
+    if participant is not None and query_one(
+        "SELECT id FROM grids WHERE meeting_id = ? AND participant_id = ?",
+        (participant["meeting_id"], participant["id"]),
     ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Your card is locked in — word proposals close once you commit to a card.",
+            detail="Your grid is locked in — word proposals close once you commit to a grid.",
         )
 
-    # Per-player quota, so one enthusiast cannot flood the pool (or the API bill).
-    if player is not None:
+    # Per-participant quota, so one enthusiast cannot flood the pool (or the API bill).
+    if participant is not None:
         used = query_one(
-            "SELECT COUNT(*) AS n FROM word_suggestions WHERE player_id = ?", (player["id"],)
+            "SELECT COUNT(*) AS n FROM word_suggestions WHERE participant_id = ?",
+            (participant["id"],),
         )
         used_count = int(used["n"]) if used else 0
-        if used_count >= settings.suggestions_per_player:
+        if used_count >= settings.suggestions_per_participant:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=(
-                    f"You have used all {settings.suggestions_per_player} of your "
-                    "word suggestions for this game."
+                    f"You have used all {settings.suggestions_per_participant} of your "
+                    "word suggestions for this meeting."
                 ),
             )
     else:
@@ -134,7 +135,7 @@ def suggest_word(
     created_word = None
 
     if verdict.approved:
-        word_id, created_word = _create_word_from_verdict(payload.text, verdict, player_name)
+        word_id, created_word = _create_word_from_verdict(payload.text, verdict, participant_name)
         # The judge may reject on a technicality we can only see after canonicalisation
         # (e.g. the corrected spelling already exists), in which case it is not approved.
         if word_id is None:
@@ -144,17 +145,18 @@ def suggest_word(
     execute(
         """
         INSERT INTO word_suggestions
-            (id, text, text_key, game_id, player_id, player_name, status, verdict, canonical,
-             category, difficulty, judged_by, word_id, created_at, decided_at)
+            (id, text, text_key, meeting_id, participant_id, participant_name, status,
+             verdict, canonical, category, difficulty, judged_by, word_id, created_at,
+             decided_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             suggestion_id,
             payload.text,
             text_key,
-            player["game_id"] if player is not None else None,
-            player["id"] if player is not None else None,
-            player_name,
+            participant["meeting_id"] if participant is not None else None,
+            participant["id"] if participant is not None else None,
+            participant_name,
             verdict.decision,
             verdict.reason,
             verdict.canonical,
@@ -169,8 +171,8 @@ def suggest_word(
 
     record_audit(
         f"suggestion.{verdict.decision}",
-        actor_id=player["id"] if player is not None else None,
-        actor_name=player_name,
+        actor_id=participant["id"] if participant is not None else None,
+        actor_name=participant_name,
         entity="word_suggestion",
         entity_id=suggestion_id,
         detail=f"{payload.text} — {verdict.reason}",
@@ -178,7 +180,9 @@ def suggest_word(
 
     row = query_one("SELECT * FROM word_suggestions WHERE id = ?", (suggestion_id,))
     assert row is not None
-    remaining = max(0, settings.suggestions_per_player - (used_count + 1)) if player else 0
+    remaining = (
+        max(0, settings.suggestions_per_participant - (used_count + 1)) if participant else 0
+    )
     return SuggestionResponse(
         suggestion=suggestion_public(row), word=created_word, remaining=remaining
     )
@@ -197,7 +201,7 @@ def _create_word_from_verdict(
     if not key or query_one("SELECT id FROM words WHERE text_key = ?", (key,)):
         return None, None
 
-    # Keep the player's spelling as an alias when the judge corrected it, so the square
+    # Keep the participant's spelling as an alias when the judge corrected it, so the square
     # still marks if a speaker says it the way it was submitted.
     aliases = [submitted] if exact_key(submitted) != key else []
 
@@ -216,7 +220,7 @@ def _create_word_from_verdict(
             verdict.difficulty,
             json.dumps(aliases),
             utcnow(),
-            f"player:{author}",
+            f"participant:{author}",
         ),
     )
     invalidate_all_indexes()
@@ -227,19 +231,19 @@ def _create_word_from_verdict(
 
 @router.get("/suggestions/mine")
 def my_suggestions(identity: Identity = Depends(require_identity)) -> dict:
-    """A player's own submission history and remaining quota."""
+    """A participant's own submission history and remaining quota."""
     settings = get_settings()
-    if identity.player is None:
-        return {"suggestions": [], "remaining": 0, "limit": settings.suggestions_per_player}
+    if identity.participant is None:
+        return {"suggestions": [], "remaining": 0, "limit": settings.suggestions_per_participant}
 
     rows = query_all(
-        "SELECT * FROM word_suggestions WHERE player_id = ? ORDER BY created_at DESC",
-        (identity.player["id"],),
+        "SELECT * FROM word_suggestions WHERE participant_id = ? ORDER BY created_at DESC",
+        (identity.participant["id"],),
     )
     return {
         "suggestions": [suggestion_public(row).model_dump() for row in rows],
-        "remaining": max(0, settings.suggestions_per_player - len(rows)),
-        "limit": settings.suggestions_per_player,
+        "remaining": max(0, settings.suggestions_per_participant - len(rows)),
+        "limit": settings.suggestions_per_participant,
     }
 
 
@@ -396,13 +400,13 @@ def update_word(
 
 @router.delete("/{word_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_word(word_id: str, _admin: Identity = Depends(require_admin)) -> None:
-    """Remove a word. Words already dealt onto a card are deactivated instead of deleted,
-    so live games keep working."""
+    """Remove a word. Words already dealt onto a grid are deactivated instead of deleted,
+    so live meetings keep working."""
     existing = query_one("SELECT * FROM words WHERE id = ?", (word_id,))
     if existing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Word not found.")
 
-    in_play = query_one("SELECT COUNT(*) AS n FROM card_cells WHERE word_id = ?", (word_id,))
+    in_play = query_one("SELECT COUNT(*) AS n FROM grid_cells WHERE word_id = ?", (word_id,))
     if in_play and in_play["n"]:
         execute("UPDATE words SET active = 0 WHERE id = ?", (word_id,))
         action = "word.deactivated"
@@ -424,8 +428,8 @@ def inspect_match(
 ) -> dict:
     """Explain how the matching engine sees a phrase.
 
-    Invaluable when a player insists the speaker "definitely said it" — the admin console
-    surfaces this as a live matcher playground.
+    Invaluable when a participant insists the speaker "definitely said it" — the admin console
+    surfaces this as a live matcher sandbox.
     """
     result = {
         "phrase": phrase,

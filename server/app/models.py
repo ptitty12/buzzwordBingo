@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-GameStatus = Literal["lobby", "live", "paused", "ended"]
+MeetingStatus = Literal["open", "live", "paused", "ended"]
 
 ACCENTS = ("green", "teal", "cyan", "violet", "amber", "lime", "rose", "sky")
 
@@ -21,11 +21,11 @@ class ORMModel(BaseModel):
 # --------------------------------------------------------------------------- auth
 
 
-class PlayerPublic(ORMModel):
-    """A player, scoped to the single game they joined."""
+class ParticipantPublic(ORMModel):
+    """A participant, scoped to the single meeting they joined."""
 
     id: str
-    game_id: str
+    meeting_id: str
     nickname: str
     avatar: str = ""
     accent: str = "green"
@@ -34,7 +34,7 @@ class PlayerPublic(ORMModel):
 
 
 class JoinRequest(BaseModel):
-    """Everything needed to enter a game — a nickname, and nothing else required."""
+    """Everything needed to enter a meeting — a nickname, and nothing else required."""
 
     nickname: str = Field(min_length=2, max_length=24)
     avatar: str = Field(default="", max_length=8)
@@ -58,12 +58,12 @@ class AdminSignIn(BaseModel):
     pin: str = Field(min_length=1, max_length=32)
 
 
-class PlayerSession(BaseModel):
-    """Issued on join: a token scoped to one game, plus the player it identifies."""
+class ParticipantSession(BaseModel):
+    """Issued on join: a token scoped to one meeting, plus the participant it identifies."""
 
     token: str
-    player: PlayerPublic
-    game_id: str
+    participant: ParticipantPublic
+    meeting_id: str
 
 
 class AdminSession(BaseModel):
@@ -75,7 +75,7 @@ class Identity(BaseModel):
     """Who the caller is, as the frontend sees it."""
 
     is_admin: bool = False
-    player: PlayerPublic | None = None
+    participant: ParticipantPublic | None = None
 
 
 # --------------------------------------------------------------------------- words
@@ -134,47 +134,47 @@ class WordBulkCreate(BaseModel):
     difficulty: int = Field(default=2, ge=1, le=3)
 
 
-# --------------------------------------------------------------------------- games
+# --------------------------------------------------------------------------- meetings
 
 
-class GamePublic(ORMModel):
+class MeetingPublic(ORMModel):
     id: str
     name: str
     code: str
-    status: GameStatus
-    card_size: int
+    status: MeetingStatus
+    grid_size: int
     free_space: bool
     description: str = ""
     created_at: str
     started_at: str | None = None
     ended_at: str | None = None
-    player_count: int = 0
+    participant_count: int = 0
     token_count: int = 0
-    bingo_count: int = 0
+    completion_count: int = 0
 
 
-class GameCreate(BaseModel):
+class MeetingCreate(BaseModel):
     name: str = Field(min_length=2, max_length=64)
     description: str = Field(default="", max_length=200)
-    card_size: int = Field(default=5, ge=3, le=7)
+    grid_size: int = Field(default=5, ge=3, le=7)
     free_space: bool = True
 
-    @field_validator("card_size")
+    @field_validator("grid_size")
     @classmethod
     def odd_size_only(cls, value: int) -> int:
         if value % 2 == 0:
-            raise ValueError("Card size must be odd so the free space lands in the centre.")
+            raise ValueError("Grid size must be odd so the free space lands in the centre.")
         return value
 
 
-class GameStatusUpdate(BaseModel):
-    status: GameStatus
+class MeetingStatusUpdate(BaseModel):
+    status: MeetingStatus
 
 
-# --------------------------------------------------------------------------- cards
+# --------------------------------------------------------------------------- grids
 
 
-class CardCell(BaseModel):
+class GridCell(BaseModel):
     id: str
     position: int
     word_id: str | None = None
@@ -185,24 +185,24 @@ class CardCell(BaseModel):
     marked_at: str | None = None
 
 
-class CardPublic(BaseModel):
+class GridPublic(BaseModel):
     id: str
-    game_id: str
-    player_id: str
+    meeting_id: str
+    participant_id: str
     nickname: str
     avatar: str = ""
     accent: str = "green"
-    card_size: int
+    grid_size: int
     locked: bool = False
     created_at: str
-    cells: list[CardCell]
+    cells: list[GridCell]
     marked_count: int = 0
     lines: list[str] = []
     best_rank: int | None = None
 
 
-class CardCreate(BaseModel):
-    """Word ids the player hand-picked. Any shortfall is auto-filled from the pool."""
+class GridCreate(BaseModel):
+    """Word ids the participant hand-picked. Any shortfall is auto-filled from the pool."""
 
     word_ids: list[str] = Field(default_factory=list)
 
@@ -218,26 +218,28 @@ class IngestRequest(BaseModel):
     """
 
     text: str = Field(min_length=1, max_length=8000)
-    game_id: str | None = Field(
+    meeting_id: str | None = Field(
         default=None,
-        description="Target game. Omit to broadcast to every live game.",
+        description="Target meeting. Omit to broadcast to every live meeting.",
     )
-    game_code: str | None = Field(default=None, description="Join code alternative to game_id.")
+    meeting_code: str | None = Field(
+        default=None, description="Join code alternative to meeting_id."
+    )
     speaker: str = Field(default="", max_length=48)
     source: str = Field(default="api", max_length=24)
 
 
 class IngestHit(BaseModel):
-    player_id: str
+    participant_id: str
     nickname: str
-    card_id: str
+    grid_id: str
     position: int
     word: str
     matched_phrase: str
 
 
-class IngestBingo(BaseModel):
-    player_id: str
+class IngestCompletion(BaseModel):
+    participant_id: str
     nickname: str
     pattern: str
     label: str
@@ -246,18 +248,18 @@ class IngestBingo(BaseModel):
     achieved_at: str
 
 
-class IngestGameResult(BaseModel):
-    game_id: str
-    game_name: str
+class IngestMeetingResult(BaseModel):
+    meeting_id: str
+    meeting_name: str
     tokens: list[str]
     hits: list[IngestHit]
-    bingos: list[IngestBingo]
+    completions: list[IngestCompletion]
 
 
 class IngestResponse(BaseModel):
     accepted: bool = True
     token_count: int
-    results: list[IngestGameResult]
+    results: list[IngestMeetingResult]
 
 
 class TranscriptToken(ORMModel):
@@ -270,20 +272,20 @@ class TranscriptToken(ORMModel):
     created_at: str
 
 
-# --------------------------------------------------------------------------- leaderboard
+# --------------------------------------------------------------------------- standings
 
 
-class LeaderboardEntry(BaseModel):
+class StandingsEntry(BaseModel):
     position: int
-    player_id: str
-    card_id: str
+    participant_id: str
+    grid_id: str
     nickname: str
     avatar: str = ""
     accent: str = "green"
     marked: int
     total: int
     lines: int
-    first_bingo_at: str | None = None
+    first_completion_at: str | None = None
     best_rank: int | None = None
 
 
@@ -319,14 +321,14 @@ class AuditEntry(ORMModel):
 
 
 class AdminStats(BaseModel):
-    players: int
+    participants: int
     words: int
     active_words: int
-    games: int
-    live_games: int
-    cards: int
+    meetings: int
+    live_meetings: int
+    grids: int
     tokens: int
-    bingos: int
+    completions: int
     connected_sockets: int
     pending_suggestions: int
     moderation_enabled: bool
@@ -338,7 +340,7 @@ class AdminStats(BaseModel):
 
 
 class WordSuggestionRequest(BaseModel):
-    """A player proposing a new buzzword for the pool."""
+    """A participant proposing a new buzzword for the pool."""
 
     text: str = Field(min_length=2, max_length=48)
 
@@ -360,14 +362,14 @@ class WordSuggestionPublic(ORMModel):
     category: str = ""
     difficulty: int = 2
     judged_by: str = ""
-    player_name: str = ""
+    participant_name: str = ""
     word_id: str | None = None
     created_at: str
     decided_at: str | None = None
 
 
 class SuggestionResponse(BaseModel):
-    """What the player sees immediately after submitting."""
+    """What the participant sees immediately after submitting."""
 
     suggestion: WordSuggestionPublic
     word: WordPublic | None = None
