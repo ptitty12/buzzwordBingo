@@ -1,13 +1,13 @@
 /** Mirrors the Pydantic models in server/app/models.py. */
 
-export type GameStatus = 'lobby' | 'live' | 'paused' | 'ended'
+export type MeetingStatus = 'open' | 'live' | 'paused' | 'ended'
 
 export type Accent = 'green' | 'teal' | 'cyan' | 'violet' | 'amber' | 'lime' | 'rose' | 'sky'
 
-/** A player exists only inside one game — there are no accounts. */
-export interface Player {
+/** A participant exists only inside one meeting — there are no accounts. */
+export interface Participant {
   id: string
-  game_id: string
+  meeting_id: string
   nickname: string
   avatar: string
   accent: Accent
@@ -15,10 +15,10 @@ export interface Player {
   last_seen_at: string | null
 }
 
-export interface PlayerSession {
+export interface ParticipantSession {
   token: string
-  player: Player
-  game_id: string
+  participant: Participant
+  meeting_id: string
 }
 
 export interface AdminSession {
@@ -28,7 +28,7 @@ export interface AdminSession {
 
 export interface Identity {
   is_admin: boolean
-  player: Player | null
+  participant: Participant | null
 }
 
 export interface AuthConfig {
@@ -53,23 +53,23 @@ export interface Word {
   usage_count: number
 }
 
-export interface Game {
+export interface Meeting {
   id: string
   name: string
   code: string
-  status: GameStatus
-  card_size: number
+  status: MeetingStatus
+  grid_size: number
   free_space: boolean
   description: string
   created_at: string
   started_at: string | null
   ended_at: string | null
-  player_count: number
+  participant_count: number
   token_count: number
-  bingo_count: number
+  completion_count: number
 }
 
-export interface CardCell {
+export interface GridCell {
   id: string
   position: number
   word_id: string | null
@@ -80,33 +80,33 @@ export interface CardCell {
   marked_at: string | null
 }
 
-export interface Card {
+export interface Grid {
   id: string
-  game_id: string
-  player_id: string
+  meeting_id: string
+  participant_id: string
   nickname: string
   avatar: string
   accent: Accent
-  card_size: number
+  grid_size: number
   locked: boolean
   created_at: string
-  cells: CardCell[]
+  cells: GridCell[]
   marked_count: number
   lines: string[]
   best_rank: number | null
 }
 
-export interface LeaderboardEntry {
+export interface StandingsEntry {
   position: number
-  player_id: string
-  card_id: string
+  participant_id: string
+  grid_id: string
   nickname: string
   avatar: string
   accent: Accent
   marked: number
   total: number
   lines: number
-  first_bingo_at: string | null
+  first_completion_at: string | null
   best_rank: number | null
 }
 
@@ -120,7 +120,7 @@ export interface TranscriptToken {
   created_at: string
 }
 
-/** A player's proposed buzzword and the judge's verdict. */
+/** A participant's proposed buzzword and the judge's verdict. */
 export interface WordSuggestion {
   id: string
   text: string
@@ -130,7 +130,7 @@ export interface WordSuggestion {
   category: string
   difficulty: number
   judged_by: string
-  player_name: string
+  participant_name: string
   word_id: string | null
   created_at: string
   decided_at: string | null
@@ -164,14 +164,14 @@ export interface AuditEntry {
 }
 
 export interface AdminStats {
-  players: number
+  participants: number
   words: number
   active_words: number
-  games: number
-  live_games: number
-  cards: number
+  meetings: number
+  live_meetings: number
+  grids: number
   tokens: number
-  bingos: number
+  completions: number
   connected_sockets: number
   pending_suggestions: number
   moderation_enabled: boolean
@@ -180,17 +180,17 @@ export interface AdminStats {
 }
 
 export interface IngestHit {
-  player_id: string
+  participant_id: string
   nickname: string
-  card_id: string
+  grid_id: string
   position: number
   word: string
   matched_phrase: string
 }
 
-/** Events pushed over the game WebSocket. */
-export type GameEvent =
-  | { event: 'hello'; payload: { game: Game; leaderboard: LeaderboardEntry[]; viewers: number } }
+/** Events pushed over the meeting WebSocket. */
+export type MeetingEvent =
+  | { event: 'hello'; payload: { meeting: Meeting; standings: StandingsEntry[]; viewers: number } }
   | {
       event: 'token'
       payload: {
@@ -201,9 +201,9 @@ export type GameEvent =
     }
   | { event: 'marks'; payload: IngestHit[] }
   | {
-      event: 'bingo'
+      event: 'completion'
       payload: {
-        player_id: string
+        participant_id: string
         nickname: string
         pattern: string
         label: string
@@ -212,6 +212,6 @@ export type GameEvent =
         achieved_at: string
       }
     }
-  | { event: 'game'; payload: Game }
-  | { event: 'roster'; payload: { player_id: string; nickname: string; card_id?: string } }
-  | { event: 'leaderboard'; payload: LeaderboardEntry[] }
+  | { event: 'meeting'; payload: Meeting }
+  | { event: 'roster'; payload: { participant_id: string; nickname: string; grid_id?: string } }
+  | { event: 'standings'; payload: StandingsEntry[] }

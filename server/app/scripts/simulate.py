@@ -1,9 +1,9 @@
-"""Replay a synthetic meeting into a live game, word by word.
+"""Replay a synthetic meeting into a live meeting, word by word.
 
 Useful for demos and load-sanity checks without wiring up a real transcription vendor.
 
-    python -m app.scripts.simulate --game DEMO1 --wpm 160
-    python -m app.scripts.simulate --game DEMO1 --api-key bb_xxx --url http://localhost:8000
+    python -m app.scripts.simulate --meeting DEMO1 --wpm 160
+    python -m app.scripts.simulate --meeting DEMO1 --api-key jw_xxx --url http://localhost:8000
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ SCRIPT_LINES = [
     "Let me quickly level set on where we are with the digital transformation roadmap.",
     "At the end of the day this is about unlocking synergies across the ecosystem.",
     "We leveraged the new platform to drive real time observability into the pipeline.",
-    "There is a lot of low hanging fruit here, honestly some genuine quick wins.",
+    "There is a lot of low hanging fruit here, honestly some genuine quick completions.",
     "I want to double click on the customer journey before we move on.",
     "Can we take that offline? I do not want to boil the ocean in this forum.",
     "Our north star is a frictionless, best in class experience that actually moves the needle.",
@@ -33,7 +33,7 @@ SCRIPT_LINES = [
     "Let me circle back with the stakeholders and run it up the flagpole.",
     "From an ROI perspective the run rate is holding, headcount is flat.",
     "We need to operationalize this and bake it into the operating model.",
-    "The agentic AI copilot work is genuinely disruptive, a real game changer.",
+    "The agentic AI copilot work is genuinely disruptive, a real meeting changer.",
     "I will ping the group, loop in procurement, and we can sync up next sprint.",
     "Blockers? The legacy system integration is still a scope creep risk.",
     "Net net, we are aligned. Best practices say we ship it and iterate.",
@@ -59,9 +59,11 @@ def post(url: str, payload: dict, api_key: str | None) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Stream a fake meeting into Buzzword Bingo.")
+    parser = argparse.ArgumentParser(description="Stream a fake meeting into Jargon Watch.")
     parser.add_argument("--url", default="http://localhost:8000", help="API base URL")
-    parser.add_argument("--game", default=None, help="Game code or id (default: all live games)")
+    parser.add_argument(
+        "--meeting", default=None, help="Meeting code or id (default: all live meetings)"
+    )
     parser.add_argument("--api-key", default=None, help="Ingest API key")
     parser.add_argument("--wpm", type=int, default=150, help="Speaking pace in words per minute")
     parser.add_argument("--loops", type=int, default=1, help="How many times to replay the script")
@@ -72,13 +74,13 @@ def main() -> None:
     delay = 60.0 / max(args.wpm, 1)
     total_words = 0
     total_hits = 0
-    total_bingos = 0
+    total_completions = 0
 
     print(f"→ streaming to {endpoint} at ~{args.wpm} wpm")
-    if args.game:
-        print(f"  target game: {args.game}")
+    if args.meeting:
+        print(f"  target meeting: {args.meeting}")
     else:
-        print("  target: every live game")
+        print("  target: every live meeting")
 
     for loop in range(args.loops):
         lines = list(SCRIPT_LINES)
@@ -89,29 +91,34 @@ def main() -> None:
             speaker = random.choice(SPEAKERS)
             for word in line.split():
                 payload: dict = {"text": word, "speaker": speaker, "source": "simulator"}
-                if args.game:
-                    if len(args.game) <= 6 and args.game.isalnum():
-                        payload["game_code"] = args.game.upper()
+                if args.meeting:
+                    if len(args.meeting) <= 6 and args.meeting.isalnum():
+                        payload["meeting_code"] = args.meeting.upper()
                     else:
-                        payload["game_id"] = args.game
+                        payload["meeting_id"] = args.meeting
 
                 result = post(endpoint, payload, args.api_key)
                 total_words += result.get("token_count", 0)
 
-                for game_result in result.get("results", []):
-                    for hit in game_result.get("hits", []):
+                for meeting_result in result.get("results", []):
+                    for hit in meeting_result.get("hits", []):
                         total_hits += 1
                         print(f"  ✓ {hit['nickname']:<14} {hit['word']}")
-                    for bingo in game_result.get("bingos", []):
-                        total_bingos += 1
-                        print(f"  ★ BINGO #{bingo['rank']}  {bingo['nickname']} — {bingo['label']}")
+                    for completion in meeting_result.get("completions", []):
+                        total_completions += 1
+                        print(
+                            f"  ★ LINE #{completion['rank']}  "
+                            f"{completion['nickname']} — {completion['label']}"
+                        )
 
                 time.sleep(delay)
 
         if args.loops > 1:
             print(f"— loop {loop + 1}/{args.loops} complete")
 
-    print(f"\ndone: {total_words} words, {total_hits} squares marked, {total_bingos} bingos")
+    print(
+        f"\ndone: {total_words} words, {total_hits} squares marked, {total_completions} completions"
+    )
 
 
 if __name__ == "__main__":

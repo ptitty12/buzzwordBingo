@@ -2,9 +2,9 @@
  * Typed API client.
  *
  * Credentials are unusual here and the store reflects that: there is one admin token
- * (earned with the PIN) and a *separate token per game* for the player identities you
- * hold. Requests carry whichever token the current view activated, so a player token
- * can never leak into an admin call or into another game's requests.
+ * (earned with the PIN) and a *separate token per meeting* for the participant identities you
+ * hold. Requests carry whichever token the current view activated, so a participant token
+ * can never leak into an admin call or into another meeting's requests.
  */
 
 import type {
@@ -13,19 +13,19 @@ import type {
   ApiKey,
   AuditEntry,
   AuthConfig,
-  Card,
-  Game,
+  Grid,
+  Meeting,
   Identity,
-  LeaderboardEntry,
-  PlayerSession,
+  StandingsEntry,
+  ParticipantSession,
   SuggestionResponse,
   TranscriptToken,
   Word,
   WordSuggestion,
 } from './types'
 
-const ADMIN_KEY = 'bb.admin'
-const PLAYERS_KEY = 'bb.players'
+const ADMIN_KEY = 'jw.admin'
+const PARTICIPANTS_KEY = 'jw.participants'
 
 export class ApiError extends Error {
   status: number
@@ -71,19 +71,19 @@ export const auth = {
       /* ignore */
     }
   },
-  playerToken(gameId: string): string | null {
-    return readJson<Record<string, string>>(PLAYERS_KEY, {})[gameId] ?? null
+  participantToken(meetingId: string): string | null {
+    return readJson<Record<string, string>>(PARTICIPANTS_KEY, {})[meetingId] ?? null
   },
-  setPlayerToken(gameId: string, token: string | null): void {
-    const all = readJson<Record<string, string>>(PLAYERS_KEY, {})
-    if (token) all[gameId] = token
-    else delete all[gameId]
-    writeJson(PLAYERS_KEY, all)
+  setParticipantToken(meetingId: string, token: string | null): void {
+    const all = readJson<Record<string, string>>(PARTICIPANTS_KEY, {})
+    if (token) all[meetingId] = token
+    else delete all[meetingId]
+    writeJson(PARTICIPANTS_KEY, all)
   },
   clearAll(): void {
     try {
       localStorage.removeItem(ADMIN_KEY)
-      localStorage.removeItem(PLAYERS_KEY)
+      localStorage.removeItem(PARTICIPANTS_KEY)
     } catch {
       /* ignore */
     }
@@ -100,10 +100,10 @@ export function activateAdmin(): void {
   activeToken = auth.adminToken()
 }
 
-export function activatePlayer(gameId: string): void {
-  // Admins browsing a game keep their admin token — it outranks a player token and
+export function activateParticipant(meetingId: string): void {
+  // Admins browsing a meeting keep their admin token — it outranks a participant token and
   // is what the admin-only endpoints on that screen require.
-  activeToken = auth.adminToken() ?? auth.playerToken(gameId)
+  activeToken = auth.adminToken() ?? auth.participantToken(meetingId)
 }
 
 export function activateNone(): void {
@@ -119,7 +119,7 @@ export function currentToken(): string | null {
  * than no token: the UI keeps rendering as if you were signed in and every action
  * fails. So we drop it at the source and let the app re-ask for an identity.
  */
-type ExpiryListener = (scope: 'admin' | 'player') => void
+type ExpiryListener = (scope: 'admin' | 'participant') => void
 let onExpired: ExpiryListener | null = null
 
 export function setExpiryHandler(handler: ExpiryListener | null): void {
@@ -136,11 +136,11 @@ function discardActiveToken(): void {
     onExpired?.('admin')
     return
   }
-  const players = readJson<Record<string, string>>(PLAYERS_KEY, {})
-  const gameId = Object.keys(players).find((id) => players[id] === dead)
-  if (gameId) {
-    auth.setPlayerToken(gameId, null)
-    onExpired?.('player')
+  const participants = readJson<Record<string, string>>(PARTICIPANTS_KEY, {})
+  const meetingId = Object.keys(participants).find((id) => participants[id] === dead)
+  if (meetingId) {
+    auth.setParticipantToken(meetingId, null)
+    onExpired?.('participant')
   }
 }
 
@@ -217,31 +217,31 @@ export const api = {
   adminSignIn: (pin: string) => post<AdminSession>('/api/auth/admin', { pin }),
   me: () => get<Identity>('/api/auth/me'),
 
-  // -------------------------------------------------------------- games (public)
-  games: (status?: string) => get<Game[]>(`/api/games${qs({ status })}`),
-  game: (id: string) => get<Game>(`/api/games/${id}`),
-  join: (gameId: string, body: { nickname: string; avatar?: string; accent?: string }) =>
-    post<PlayerSession>(`/api/games/${gameId}/join`, body),
+  // -------------------------------------------------------------- meetings (public)
+  meetings: (status?: string) => get<Meeting[]>(`/api/meetings${qs({ status })}`),
+  meeting: (id: string) => get<Meeting>(`/api/meetings/${id}`),
+  join: (meetingId: string, body: { nickname: string; avatar?: string; accent?: string }) =>
+    post<ParticipantSession>(`/api/meetings/${meetingId}/join`, body),
 
-  // -------------------------------------------------------------- games (admin)
-  createGame: (body: {
+  // -------------------------------------------------------------- meetings (admin)
+  createMeeting: (body: {
     name: string
     description?: string
-    card_size?: number
+    grid_size?: number
     free_space?: boolean
-  }) => post<Game>('/api/games', body),
-  setGameStatus: (id: string, status: string) => patch<Game>(`/api/games/${id}/status`, { status }),
-  resetGame: (id: string) => post<Game>(`/api/games/${id}/reset`),
-  deleteGame: (id: string) => del(`/api/games/${id}`),
+  }) => post<Meeting>('/api/meetings', body),
+  setMeetingStatus: (id: string, status: string) => patch<Meeting>(`/api/meetings/${id}/status`, { status }),
+  resetMeeting: (id: string) => post<Meeting>(`/api/meetings/${id}/reset`),
+  deleteMeeting: (id: string) => del(`/api/meetings/${id}`),
 
-  // -------------------------------------------------------------- cards
-  myCard: (gameId: string) => get<Card>(`/api/games/${gameId}/card`),
-  buildCard: (gameId: string, wordIds: string[]) =>
-    post<Card>(`/api/games/${gameId}/card`, { word_ids: wordIds }),
-  gameCards: (gameId: string) => get<Card[]>(`/api/games/${gameId}/cards`),
-  leaderboard: (gameId: string) => get<LeaderboardEntry[]>(`/api/games/${gameId}/leaderboard`),
-  transcript: (gameId: string, limit = 120) =>
-    get<TranscriptToken[]>(`/api/games/${gameId}/transcript${qs({ limit })}`),
+  // -------------------------------------------------------------- grids
+  myGrid: (meetingId: string) => get<Grid>(`/api/meetings/${meetingId}/grid`),
+  buildGrid: (meetingId: string, wordIds: string[]) =>
+    post<Grid>(`/api/meetings/${meetingId}/grid`, { word_ids: wordIds }),
+  meetingGrids: (meetingId: string) => get<Grid[]>(`/api/meetings/${meetingId}/grids`),
+  standings: (meetingId: string) => get<StandingsEntry[]>(`/api/meetings/${meetingId}/standings`),
+  transcript: (meetingId: string, limit = 120) =>
+    get<TranscriptToken[]>(`/api/meetings/${meetingId}/transcript${qs({ limit })}`),
 
   // -------------------------------------------------------------- words
   words: (params: { include_inactive?: boolean; category?: string; search?: string } = {}) =>
@@ -268,14 +268,14 @@ export const api = {
 
   // -------------------------------------------------------------- admin
   stats: () => get<AdminStats>('/api/admin/stats'),
-  players: (gameId?: string) =>
-    get<import('./types').Player[]>(`/api/admin/players${qs({ game_id: gameId })}`),
-  removePlayer: (id: string) => del(`/api/admin/players/${id}`),
+  participants: (meetingId?: string) =>
+    get<import('./types').Participant[]>(`/api/admin/participants${qs({ meeting_id: meetingId })}`),
+  removeParticipant: (id: string) => del(`/api/admin/participants/${id}`),
   suggestions: (status?: string) =>
     get<WordSuggestion[]>(`/api/admin/suggestions${qs({ status })}`),
   decideSuggestion: (id: string, approve: boolean, reason = '') =>
     post<WordSuggestion>(`/api/admin/suggestions/${id}`, { approve, reason }),
-  allCards: (gameId?: string) => get<Card[]>(`/api/admin/cards${qs({ game_id: gameId })}`),
+  allGrids: (meetingId?: string) => get<Grid[]>(`/api/admin/grids${qs({ meeting_id: meetingId })}`),
   keys: () => get<ApiKey[]>('/api/admin/keys'),
   createKey: (name: string) => post<ApiKey>('/api/admin/keys', { name }),
   revokeKey: (id: string) => del(`/api/admin/keys/${id}`),
@@ -284,7 +284,7 @@ export const api = {
   // -------------------------------------------------------------- ingest
   /** Admin test console — posts transcript through the same path a vendor would use. */
   ingest: (
-    body: { text: string; game_id?: string; speaker?: string; source?: string },
+    body: { text: string; meeting_id?: string; speaker?: string; source?: string },
     apiKey: string,
   ) =>
     request<{ token_count: number; results: unknown[] }>('/api/ingest', {

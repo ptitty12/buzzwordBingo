@@ -1,5 +1,5 @@
 /**
- * "Propose a buzzword" — the player's route into the word pool.
+ * "Propose a buzzword" — the participant's route into the word pool.
  *
  * The submission is judged by an LLM curator, so the interesting part of this UI is
  * the verdict: an approval shows the word as it was filed (including any spelling the
@@ -111,8 +111,8 @@ function SuggestWordModal({
       {history.data && (
         <div className="faint" style={{ fontSize: 11.5 }}>
           {remaining > 0
-            ? `${remaining} of ${history.data.limit} suggestions left this game.`
-            : 'You have used all of your suggestions for this game.'}
+            ? `${remaining} of ${history.data.limit} suggestions left this meeting.`
+            : 'You have used all of your suggestions for this meeting.'}
         </div>
       )}
 

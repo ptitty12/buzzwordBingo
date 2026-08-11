@@ -8,6 +8,7 @@ blocking the transcript ingest path.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 import uuid
@@ -34,6 +35,61 @@ def utcnow() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+#: Renames applied when opening a database written before the vocabulary change.
+#: Tables first, then the columns inside them — order matters, since the column
+#: renames are expressed against the new table names.
+_LEGACY_TABLES = [
+    ("games", "meetings"),
+    ("players", "participants"),
+    ("cards", "grids"),
+    ("card_cells", "grid_cells"),
+    ("bingos", "completions"),
+]
+
+_LEGACY_COLUMNS = [
+    ("meetings", "card_size", "grid_size"),
+    ("participants", "game_id", "meeting_id"),
+    ("grids", "game_id", "meeting_id"),
+    ("grids", "player_id", "participant_id"),
+    ("grid_cells", "card_id", "grid_id"),
+    ("transcript_tokens", "game_id", "meeting_id"),
+    ("completions", "game_id", "meeting_id"),
+    ("completions", "card_id", "grid_id"),
+    ("completions", "player_id", "participant_id"),
+    ("word_suggestions", "game_id", "meeting_id"),
+    ("word_suggestions", "player_id", "participant_id"),
+    ("word_suggestions", "player_name", "participant_name"),
+]
+
+
+def migrate_legacy_names(conn: sqlite3.Connection) -> None:
+    """Rename tables and columns carried over from the pre-Jargon-Watch schema.
+
+    Without this, `CREATE TABLE IF NOT EXISTS` would quietly build a second, empty
+    set of tables alongside the originals and every existing meeting would vanish.
+    SQLite rewrites foreign-key clauses in other tables to follow a renamed table, so
+    the references stay intact; both loops are no-ops on a database that never held
+    the old names, which is why this can run unconditionally on every open.
+    """
+    existing = {
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if not existing & {old for old, _ in _LEGACY_TABLES}:
+        return
+
+    for old, new in _LEGACY_TABLES:
+        if old in existing and new not in existing:
+            conn.execute(f"ALTER TABLE {old} RENAME TO {new}")
+
+    for table, old, new in _LEGACY_COLUMNS:
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if old in columns and new not in columns:
+            conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
+
+    conn.commit()
+    logging.getLogger("jargon.db").warning("Migrated a legacy database to the current table names.")
+
+
 def get_connection() -> sqlite3.Connection:
     """Return the shared connection, initialising the schema on first use."""
     global _connection
@@ -48,6 +104,7 @@ def get_connection() -> sqlite3.Connection:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute("PRAGMA foreign_keys = ON")
+            migrate_legacy_names(conn)
             conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
             conn.commit()
             _connection = conn

@@ -1,17 +1,17 @@
 /**
- * The game room.
+ * The meeting room.
  *
- * Two modes share one screen: players without a card get the drafting board, players
- * with one get the live card, ticker and standings. Everything after the initial load
+ * Two modes share one screen: participants without a grid get the drafting board, participants
+ * with one get the live grid, ticker and standings. Everything after the initial load
  * is driven by the WebSocket, so the view never polls.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { api } from '../lib/api'
-import { useAsync, useDebounced, useGameSocket } from '../lib/hooks'
+import { useAsync, useDebounced, useMeetingSocket } from '../lib/hooks'
 import { useSession, useToast } from '../lib/store'
-import { BingoGrid, Celebration, Leaderboard, Ticker } from '../components/BingoCard'
+import { TermGrid, Celebration, Standings, Ticker } from '../components/TermGrid'
 import { SuggestWordButton } from '../components/SuggestWord'
 import {
   Difficulty,
@@ -23,84 +23,84 @@ import {
   copyToClipboard,
 } from '../components/ui'
 import type {
-  Card,
-  GameEvent,
-  LeaderboardEntry,
+  Grid,
+  MeetingEvent,
+  StandingsEntry,
   TranscriptToken,
   Word,
 } from '../lib/types'
 
 const MAX_TICKER_TOKENS = 260
 
-export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path: string) => void }) {
-  const { player, isAdmin } = useSession()
+export function MeetingRoom({ meetingId, navigate }: { meetingId: string; navigate: (path: string) => void }) {
+  const { participant, isAdmin } = useSession()
   const { push } = useToast()
-  const myPlayerId = player?.id
+  const myParticipantId = participant?.id
 
-  const game = useAsync(() => api.game(gameId), [gameId])
-  const [card, setCard] = useState<Card | null>(null)
-  const [cardMissing, setCardMissing] = useState(false)
-  const [cardError, setCardError] = useState<string | null>(null)
+  const meeting = useAsync(() => api.meeting(meetingId), [meetingId])
+  const [grid, setGrid] = useState<Grid | null>(null)
+  const [gridMissing, setGridMissing] = useState(false)
+  const [gridError, setGridError] = useState<string | null>(null)
   const [tokens, setTokens] = useState<TranscriptToken[]>([])
-  const [board, setBoard] = useState<LeaderboardEntry[]>([])
+  const [board, setBoard] = useState<StandingsEntry[]>([])
   const [viewers, setViewers] = useState(0)
   const [celebration, setCelebration] = useState<{ label: string; who: string } | null>(null)
 
-  const gameData = game.data
-  // Admins browse every game but play in none of them.
-  const spectating = isAdmin && !myPlayerId
-  const cardRef = useRef<Card | null>(null)
-  cardRef.current = card
+  const meetingData = meeting.data
+  // Admins browse every meeting but play in none of them.
+  const spectating = isAdmin && !myParticipantId
+  const gridRef = useRef<Grid | null>(null)
+  gridRef.current = grid
 
-  // Initial load: card (may legitimately 404), transcript backfill, standings.
-  // An admin watching a game holds no player identity and therefore has no card —
+  // Initial load: grid (may legitimately 404), transcript backfill, standings.
+  // An admin watching a meeting holds no participant identity and therefore has no grid —
   // that is spectating, not an error, so we do not even ask for one.
   useEffect(() => {
     let cancelled = false
-    setCard(null)
-    setCardMissing(false)
+    setGrid(null)
+    setGridMissing(false)
 
     if (!spectating) {
       api
-        .myCard(gameId)
-        .then((result) => !cancelled && setCard(result))
+        .myGrid(meetingId)
+        .then((result) => !cancelled && setGrid(result))
         .catch((err: unknown) => {
           if (cancelled) return
           const status = (err as { status?: number }).status
-          if (status === 404) setCardMissing(true)
-          else setCardError(err instanceof Error ? err.message : 'Could not load your card.')
+          if (status === 404) setGridMissing(true)
+          else setGridError(err instanceof Error ? err.message : 'Could not load your grid.')
         })
     }
 
-    api.transcript(gameId).then((result) => !cancelled && setTokens(result)).catch(() => undefined)
-    api.leaderboard(gameId).then((result) => !cancelled && setBoard(result)).catch(() => undefined)
+    api.transcript(meetingId).then((result) => !cancelled && setTokens(result)).catch(() => undefined)
+    api.standings(meetingId).then((result) => !cancelled && setBoard(result)).catch(() => undefined)
 
     return () => {
       cancelled = true
     }
-  }, [gameId, spectating])
+  }, [meetingId, spectating])
 
-  const refreshCard = useCallback(() => {
+  const refreshGrid = useCallback(() => {
     api
-      .myCard(gameId)
-      .then(setCard)
+      .myGrid(meetingId)
+      .then(setGrid)
       .catch(() => undefined)
-  }, [gameId])
+  }, [meetingId])
 
   const onEvent = useCallback(
-    (event: GameEvent) => {
+    (event: MeetingEvent) => {
       switch (event.event) {
         case 'hello':
-          setBoard(event.payload.leaderboard)
+          setBoard(event.payload.standings)
           setViewers(event.payload.viewers)
-          game.setData(event.payload.game)
+          meeting.setData(event.payload.meeting)
           break
 
-        case 'game':
-          game.setData(event.payload)
+        case 'meeting':
+          meeting.setData(event.payload)
           if (event.payload.status === 'live') {
-            push({ kind: 'info', title: 'The meeting is live', body: 'Cards are locked. Good luck.' })
-            refreshCard()
+            push({ kind: 'info', title: 'The meeting is live', body: 'Grids are locked. Good luck.' })
+            refreshGrid()
           }
           break
 
@@ -124,9 +124,9 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
         }
 
         case 'marks': {
-          const mine = event.payload.filter((hit) => hit.player_id === myPlayerId)
+          const mine = event.payload.filter((hit) => hit.participant_id === myParticipantId)
           if (mine.length === 0) break
-          setCard((current) => {
+          setGrid((current) => {
             if (!current) return current
             const positions = new Set(mine.map((hit) => hit.position))
             return {
@@ -147,108 +147,108 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
           break
         }
 
-        case 'bingo': {
-          const isMe = event.payload.player_id === myPlayerId
+        case 'completion': {
+          const isMe = event.payload.participant_id === myParticipantId
           if (isMe) {
-            setCard((current) =>
+            setGrid((current) =>
               current ? { ...current, lines: [...new Set([...current.lines, event.payload.pattern])] } : current,
             )
             setCelebration({ label: event.payload.label, who: 'You' })
             setTimeout(() => setCelebration(null), 3600)
           }
           push({
-            kind: 'bingo',
-            title: `${isMe ? 'BINGO! You' : `${event.payload.nickname} got bingo`} — ${event.payload.label}`,
+            kind: 'completion',
+            title: `${isMe ? 'Line complete! You' : `${event.payload.nickname} completed a line`} — ${event.payload.label}`,
             body: `#${event.payload.rank} to complete a line.`,
           })
           break
         }
 
-        case 'leaderboard':
+        case 'standings':
           setBoard(event.payload)
           break
 
         case 'roster':
-          if (event.payload.player_id !== myPlayerId) {
+          if (event.payload.participant_id !== myParticipantId) {
             push({ kind: 'info', title: `${event.payload.nickname} joined` })
           }
           break
       }
     },
-    [game, push, refreshCard, myPlayerId],
+    [meeting, push, refreshGrid, myParticipantId],
   )
 
-  const socket = useGameSocket(gameId, onEvent)
+  const socket = useMeetingSocket(meetingId, onEvent)
 
-  if (game.loading) return <div className="page"><Spinner label="Loading game…" /></div>
-  if (game.error || !gameData) {
+  if (meeting.loading) return <div className="page"><Spinner label="Loading meeting…" /></div>
+  if (meeting.error || !meetingData) {
     return (
       <div className="page">
-        <ErrorNote message={game.error ?? 'Game not found.'} />
+        <ErrorNote message={meeting.error ?? 'Meeting not found.'} />
         <button className="btn" style={{ marginTop: 14 }} onClick={() => navigate('')}>
-          ← All games
+          ← All meetings
         </button>
       </div>
     )
   }
 
-  // Drafting is a one-way door: the builder shows only until a card exists.
-  const showBuilder = cardMissing
+  // Drafting is a one-way door: the builder shows only until a grid exists.
+  const showBuilder = gridMissing
 
   return (
     <div className="page">
       {celebration && <Celebration label={celebration.label} who={celebration.who} />}
 
-      <GameHeader
-        game={gameData}
+      <MeetingHeader
+        meeting={meetingData}
         viewers={viewers}
         socket={socket}
         onBack={() => navigate('')}
-        onChanged={game.reload}
+        onChanged={meeting.reload}
       />
 
-      {cardError && <ErrorNote message={cardError} />}
+      {gridError && <ErrorNote message={gridError} />}
 
       {spectating ? (
         <Spectator
-          gameId={gameId}
+          meetingId={meetingId}
           tokens={tokens}
           board={board}
-          onOpenCards={() => navigate('admin')}
+          onOpenGrids={() => navigate('admin')}
         />
       ) : showBuilder ? (
-        <CardBuilder
-          gameId={gameId}
-          cardSize={gameData.card_size}
-          freeSpace={gameData.free_space}
+        <GridBuilder
+          meetingId={meetingId}
+          gridSize={meetingData.grid_size}
+          freeSpace={meetingData.free_space}
           onBuilt={(built) => {
-            setCard(built)
-            setCardMissing(false)
-            push({ kind: 'success', title: 'Card locked in', body: 'Now wait for the buzzwords to fly.' })
+            setGrid(built)
+            setGridMissing(false)
+            push({ kind: 'success', title: 'Grid locked in', body: 'Now wait for the buzzwords to fly.' })
           }}
         />
-      ) : card ? (
+      ) : grid ? (
         <div className="split split-wide">
           <div className="col gap-16">
             <Panel
               title={
                 <div className="row gap-10">
-                  <h2>Your card</h2>
-                  {card.lines.length > 0 && (
+                  <h2>Your grid</h2>
+                  {grid.lines.length > 0 && (
                     <span className="badge badge-accent">
-                      ★ {card.lines.length} line{card.lines.length === 1 ? '' : 's'}
+                      ★ {grid.lines.length} line{grid.lines.length === 1 ? '' : 's'}
                     </span>
                   )}
                 </div>
               }
-              subtitle={`${card.marked_count} of ${card.cells.length} squares marked`}
+              subtitle={`${grid.marked_count} of ${grid.cells.length} squares marked`}
               actions={
                 /* No rebuild and no proposals once you have committed: both would let a
-                   player reshape their odds after hearing which words are landing. */
+                   participant reshape their odds after hearing which words are landing. */
                 <span className="badge badge-live">locked in</span>
               }
             >
-              <BingoGrid card={card} />
+              <TermGrid grid={grid} />
             </Panel>
 
             <Panel
@@ -262,16 +262,16 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
 
           <div className="sticky-side">
             <Panel
-              title="Leaderboard"
-              subtitle="First to bingo wins"
+              title="Standings"
+              subtitle="First to complete a line"
               flush
             >
-              <Leaderboard entries={board} meId={myPlayerId} />
+              <Standings entries={board} meId={myParticipantId} />
             </Panel>
           </div>
         </div>
       ) : (
-        <Spinner label="Loading your card…" />
+        <Spinner label="Loading your grid…" />
       )}
     </div>
   )
@@ -279,14 +279,14 @@ export function GameRoom({ gameId, navigate }: { gameId: string; navigate: (path
 
 /* ------------------------------------------------------------------ header */
 
-function GameHeader({
-  game,
+function MeetingHeader({
+  meeting,
   viewers,
   socket,
   onBack,
   onChanged,
 }: {
-  game: import('../lib/types').Game
+  meeting: import('../lib/types').Meeting
   viewers: number
   socket: string
   onBack: () => void
@@ -313,10 +313,10 @@ function GameHeader({
     <div className="page-head">
       <div className="row-between wrap gap-12">
         <div className="row gap-12" style={{ minWidth: 0 }}>
-          <button className="btn btn-ghost btn-sm" onClick={onBack} aria-label="Back to lobby">←</button>
+          <button className="btn btn-ghost btn-sm" onClick={onBack} aria-label="Back to open">←</button>
           <div style={{ minWidth: 0 }}>
             <h1 className="truncate">
-              {game.name} <StatusBadge status={game.status} />
+              {meeting.name} <StatusBadge status={meeting.status} />
             </h1>
             <div className="sub row gap-12 wrap">
               <button
@@ -326,15 +326,15 @@ function GameHeader({
                   color: 'var(--accent)', letterSpacing: '.14em', fontWeight: 700,
                 }}
                 onClick={async () => {
-                  const ok = await copyToClipboard(game.code)
-                  push({ kind: ok ? 'success' : 'error', title: ok ? `Copied ${game.code}` : 'Copy failed' })
+                  const ok = await copyToClipboard(meeting.code)
+                  push({ kind: ok ? 'success' : 'error', title: ok ? `Copied ${meeting.code}` : 'Copy failed' })
                 }}
                 title="Copy join code"
               >
-                {game.code}
+                {meeting.code}
               </button>
-              <span className="faint" style={{ fontSize: 12 }}>{game.player_count} players</span>
-              <span className="faint" style={{ fontSize: 12 }}>{game.token_count} words heard</span>
+              <span className="faint" style={{ fontSize: 12 }}>{meeting.participant_count} participants</span>
+              <span className="faint" style={{ fontSize: 12 }}>{meeting.token_count} words heard</span>
               <span className="faint row gap-4" style={{ fontSize: 12 }}>
                 <i
                   className={`dot${socket === 'open' ? ' dot-pulse' : ''}`}
@@ -348,29 +348,29 @@ function GameHeader({
 
         {isAdmin && (
           <div className="row gap-6 wrap">
-            {game.status !== 'live' && (
+            {meeting.status !== 'live' && (
               <button
                 className="btn btn-primary btn-sm"
                 disabled={busy}
-                onClick={() => act(() => api.setGameStatus(game.id, 'live'), 'Game is live')}
+                onClick={() => act(() => api.setMeetingStatus(meeting.id, 'live'), 'Meeting is live')}
               >
                 ▶ Start
               </button>
             )}
-            {game.status === 'live' && (
+            {meeting.status === 'live' && (
               <button
                 className="btn btn-sm"
                 disabled={busy}
-                onClick={() => act(() => api.setGameStatus(game.id, 'paused'), 'Game paused')}
+                onClick={() => act(() => api.setMeetingStatus(meeting.id, 'paused'), 'Meeting paused')}
               >
                 ‖ Pause
               </button>
             )}
-            {game.status !== 'ended' && (
+            {meeting.status !== 'ended' && (
               <button
                 className="btn btn-sm"
                 disabled={busy}
-                onClick={() => act(() => api.setGameStatus(game.id, 'ended'), 'Game ended')}
+                onClick={() => act(() => api.setMeetingStatus(meeting.id, 'ended'), 'Meeting ended')}
               >
                 ■ End
               </button>
@@ -379,8 +379,8 @@ function GameHeader({
               className="btn btn-danger btn-sm"
               disabled={busy}
               onClick={() => {
-                if (confirm('Clear the transcript, all marks and all wins? Cards are kept.')) {
-                  act(() => api.resetGame(game.id), 'Game reset')
+                if (confirm('Clear the transcript, all marks and all completed lines? Grids are kept.')) {
+                  act(() => api.resetMeeting(meeting.id), 'Meeting reset')
                 }
               }}
             >
@@ -395,19 +395,19 @@ function GameHeader({
 
 /* ------------------------------------------------------------------ builder */
 
-function CardBuilder({
-  gameId,
-  cardSize,
+function GridBuilder({
+  meetingId,
+  gridSize,
   freeSpace,
   onBuilt,
 }: {
-  gameId: string
-  cardSize: number
+  meetingId: string
+  gridSize: number
   freeSpace: boolean
-  onBuilt: (card: Card) => void
+  onBuilt: (grid: Grid) => void
 }) {
   const { push } = useToast()
-  const capacity = cardSize * cardSize - (freeSpace ? 1 : 0)
+  const capacity = gridSize * gridSize - (freeSpace ? 1 : 0)
 
   const [selected, setSelected] = useState<string[]>([])
   const [search, setSearch] = useState('')
@@ -435,7 +435,7 @@ function CardBuilder({
     setSelected((current) => {
       if (current.includes(word.id)) return current.filter((id) => id !== word.id)
       if (current.length >= capacity) {
-        push({ kind: 'error', title: 'Card is full', body: `Deselect a word to swap it out.` })
+        push({ kind: 'error', title: 'Grid is full', body: `Deselect a word to swap it out.` })
         return current
       }
       return [...current, word.id]
@@ -446,7 +446,7 @@ function CardBuilder({
    * Board positions skip over the free centre square; the selection array does not.
    * This converts one to the other so a drop on a square knows which pick it moved.
    */
-  const freeIndex = freeSpace ? Math.floor((cardSize * cardSize) / 2) : -1
+  const freeIndex = freeSpace ? Math.floor((gridSize * gridSize) / 2) : -1
   const slotOf = (position: number) =>
     freeIndex >= 0 && position > freeIndex ? position - 1 : position
 
@@ -482,21 +482,21 @@ function CardBuilder({
     setBusy(true)
     setError(null)
     try {
-      onBuilt(await api.buildCard(gameId, selected))
+      onBuilt(await api.buildGrid(meetingId, selected))
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not build the card.')
+      setError(err instanceof Error ? err.message : 'Could not build the grid.')
     } finally {
       setBusy(false)
     }
   }
 
   // Live preview: chosen words in the order you arranged them, free space carved out of
-  // the centre. The server no longer reshuffles, so this is exactly the card you get.
-  const preview: Card = useMemo(() => {
+  // the centre. The server no longer reshuffles, so this is exactly the grid you get.
+  const preview: Grid = useMemo(() => {
     const byId = new Map((words.data ?? []).map((word) => [word.id, word]))
     const cells = []
     let cursor = 0
-    for (let position = 0; position < cardSize * cardSize; position += 1) {
+    for (let position = 0; position < gridSize * gridSize; position += 1) {
       if (position === freeIndex) {
         cells.push({
           id: `free-${position}`, position, word_id: null, text: 'FREE',
@@ -518,23 +518,23 @@ function CardBuilder({
       })
     }
     return {
-      id: 'preview', game_id: gameId, player_id: '', nickname: 'Preview', avatar: '', accent: 'green',
-      card_size: cardSize, locked: false, created_at: '', cells, marked_count: 0, lines: [], best_rank: null,
+      id: 'preview', meeting_id: meetingId, participant_id: '', nickname: 'Preview', avatar: '', accent: 'green',
+      grid_size: gridSize, locked: false, created_at: '', cells, marked_count: 0, lines: [], best_rank: null,
     }
-  }, [selected, words.data, cardSize, freeIndex, gameId])
+  }, [selected, words.data, gridSize, freeIndex, meetingId])
 
   const remaining = capacity - selected.length
 
   return (
     <div className="split split-wide">
       <Panel
-        title="Draft your card"
+        title="Draft your grid"
         subtitle={`Pick up to ${capacity} buzzwords — anything you leave blank is filled at random.`}
         actions={
           <>
             <SuggestWordButton onWordAdded={words.reload} />
             <button className="btn btn-sm" onClick={randomFill} disabled={remaining <= 0}>
-              Surprise me
+              Fill the rest
             </button>
             <button
               className="btn btn-sm"
@@ -605,14 +605,14 @@ function CardBuilder({
           subtitle={
             remaining > 0
               ? `${selected.length}/${capacity} chosen · ${remaining} auto-filled`
-              : `${capacity}/${capacity} — card is full`
+              : `${capacity}/${capacity} — grid is full`
           }
         >
-          <BingoGrid card={preview} compact onSwap={swapSquares} />
+          <TermGrid grid={preview} compact onSwap={swapSquares} />
           {selected.length > 1 && (
             <p className="faint" style={{ fontSize: 11.5, marginTop: 10 }}>
               ⠿ Drag a square onto another to swap them — or tap one, then tap where it
-              should go. This layout is the card you get.
+              should go. This layout is the grid you get.
             </p>
           )}
           <div className="meter" style={{ marginTop: 14 }}>
@@ -620,7 +620,7 @@ function CardBuilder({
           </div>
           <div className="row gap-8" style={{ marginTop: 14 }}>
             <button className="btn btn-primary grow" onClick={submit} disabled={busy}>
-              {busy ? 'Locking in…' : 'Lock in card'}
+              {busy ? 'Locking in…' : 'Lock in grid'}
             </button>
           </div>
           <p className="faint" style={{ fontSize: 11.5, marginTop: 10 }}>
@@ -638,21 +638,21 @@ function CardBuilder({
 /* ------------------------------------------------------------------ spectator */
 
 /**
- * What an administrator sees in a game room: the room's live state without a card,
- * because admins do not hold a player identity and cannot draft one.
+ * What an administrator sees in a meeting room: the room's live state without a grid,
+ * because admins do not hold a participant identity and cannot draft one.
  */
 function Spectator({
-  gameId,
+  meetingId,
   tokens,
   board,
-  onOpenCards,
+  onOpenGrids,
 }: {
-  gameId: string
+  meetingId: string
   tokens: TranscriptToken[]
-  board: LeaderboardEntry[]
-  onOpenCards: () => void
+  board: StandingsEntry[]
+  onOpenGrids: () => void
 }) {
-  const cards = useAsync(() => api.gameCards(gameId), [gameId])
+  const grids = useAsync(() => api.meetingGrids(meetingId), [meetingId])
 
   return (
     <div className="split split-wide">
@@ -666,25 +666,25 @@ function Spectator({
         </Panel>
 
         <Panel
-          title={`${cards.data?.length ?? 0} cards in play`}
-          subtitle="You are watching as an administrator — you have no card of your own"
+          title={`${grids.data?.length ?? 0} active grids`}
+          subtitle="You are watching as an administrator — you have no grid of your own"
           actions={
-            <button className="btn btn-sm" onClick={onOpenCards}>
+            <button className="btn btn-sm" onClick={onOpenGrids}>
               Open console
             </button>
           }
         >
-          {cards.loading && <Spinner />}
-          {cards.data && cards.data.length === 0 && (
+          {grids.loading && <Spinner />}
+          {grids.data && grids.data.length === 0 && (
             <Empty icon="▦" title="Nobody has joined yet">
-              Share the game code and players can drop in with a nickname.
+              Share the meeting code and participants can drop in with a nickname.
             </Empty>
           )}
           <div
-            className="game-grid"
+            className="meeting-grid"
             style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}
           >
-            {(cards.data ?? []).map((entry) => (
+            {(grids.data ?? []).map((entry) => (
               <div key={entry.id} className="col gap-6">
                 <div className="row gap-8">
                   <span style={{ fontWeight: 620, fontSize: 13 }}>{entry.nickname}</span>
@@ -692,7 +692,7 @@ function Spectator({
                     {entry.marked_count}/{entry.cells.length}
                   </span>
                 </div>
-                <BingoGrid card={entry} compact />
+                <TermGrid grid={entry} compact />
               </div>
             ))}
           </div>
@@ -700,8 +700,8 @@ function Spectator({
       </div>
 
       <div className="sticky-side">
-        <Panel title="Leaderboard" subtitle="First to bingo wins" flush>
-          <Leaderboard entries={board} />
+        <Panel title="Standings" subtitle="First to complete a line" flush>
+          <Standings entries={board} />
         </Panel>
       </div>
     </div>

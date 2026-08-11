@@ -11,14 +11,14 @@ import {
   type ReactNode,
 } from 'react'
 
-import { activateAdmin, activateNone, activatePlayer, api, auth, setExpiryHandler } from './api'
-import type { Player } from './types'
+import { activateAdmin, activateNone, activateParticipant, api, auth, setExpiryHandler } from './api'
+import type { Participant } from './types'
 
 /* ------------------------------------------------------------------ toasts */
 
 export interface Toast {
   id: number
-  kind: 'info' | 'success' | 'error' | 'bingo'
+  kind: 'info' | 'success' | 'error' | 'completion'
   title: string
   body?: string
 }
@@ -49,7 +49,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     (toast: Omit<Toast, 'id'>) => {
       const id = nextId.current++
       setToasts((current) => [...current.slice(-4), { ...toast, id }])
-      const lifetime = toast.kind === 'bingo' ? 6500 : toast.kind === 'error' ? 6000 : 4000
+      const lifetime = toast.kind === 'completion' ? 6500 : toast.kind === 'error' ? 6000 : 4000
       timers.current.set(id, setTimeout(() => dismiss(id), lifetime))
     },
     [dismiss],
@@ -75,19 +75,19 @@ export function useToast(): ToastApi {
 interface SessionApi {
   /** True when an admin PIN has been exchanged for a token. */
   isAdmin: boolean
-  /** The player identity for the game currently being viewed, if any. */
-  player: Player | null
+  /** The participant identity for the meeting currently being viewed, if any. */
+  participant: Participant | null
   ready: boolean
   /** Set when the server rejected a stored token, so the UI can explain the eviction. */
-  expired: 'admin' | 'player' | null
+  expired: 'admin' | 'participant' | null
   signInAdmin: (token: string) => void
   signOutAdmin: () => void
-  /** Record a freshly-joined player and make them the active identity. */
-  joinedGame: (gameId: string, token: string, player: Player) => void
-  /** Point the API client at a game (player token, or admin token if you hold one). */
-  enterGame: (gameId: string) => Promise<void>
+  /** Record a freshly-joined participant and make them the active identity. */
+  joinedMeeting: (meetingId: string, token: string, participant: Participant) => void
+  /** Point the API client at a meeting (participant token, or admin token if you hold one). */
+  enterMeeting: (meetingId: string) => Promise<void>
   leaveContext: () => void
-  hasPlayerToken: (gameId: string) => boolean
+  hasParticipantToken: (meetingId: string) => boolean
   /** Acknowledge an expiry notice once it has been shown. */
   clearExpiry: () => void
 }
@@ -96,16 +96,16 @@ const SessionContext = createContext<SessionApi | null>(null)
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [isAdmin, setIsAdmin] = useState(false)
-  const [player, setPlayer] = useState<Player | null>(null)
+  const [participant, setParticipant] = useState<Participant | null>(null)
   const [ready, setReady] = useState(false)
-  const [expired, setExpired] = useState<'admin' | 'player' | null>(null)
+  const [expired, setExpired] = useState<'admin' | 'participant' | null>(null)
 
   // The API client bins a token the server rejects; mirror that into React state so
   // the screen stops pretending the identity is still good.
   useEffect(() => {
     setExpiryHandler((scope) => {
       if (scope === 'admin') setIsAdmin(false)
-      else setPlayer(null)
+      else setParticipant(null)
       setExpired(scope)
     })
     return () => setExpiryHandler(null)
@@ -139,63 +139,63 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     window.location.hash = '/'
   }, [])
 
-  const joinedGame = useCallback((gameId: string, token: string, joined: Player) => {
-    auth.setPlayerToken(gameId, token)
-    activatePlayer(gameId)
-    setPlayer(joined)
+  const joinedMeeting = useCallback((meetingId: string, token: string, joined: Participant) => {
+    auth.setParticipantToken(meetingId, token)
+    activateParticipant(meetingId)
+    setParticipant(joined)
   }, [])
 
-  const enterGame = useCallback(async (gameId: string) => {
-    activatePlayer(gameId)
-    if (!auth.playerToken(gameId)) {
-      // Admins have no player identity of their own; that is expected, not an error.
-      setPlayer(null)
+  const enterMeeting = useCallback(async (meetingId: string) => {
+    activateParticipant(meetingId)
+    if (!auth.participantToken(meetingId)) {
+      // Admins have no participant identity of their own; that is expected, not an error.
+      setParticipant(null)
       return
     }
     try {
       const identity = await api.me()
-      setPlayer(identity.player)
+      setParticipant(identity.participant)
     } catch {
-      auth.setPlayerToken(gameId, null)
-      setPlayer(null)
+      auth.setParticipantToken(meetingId, null)
+      setParticipant(null)
     }
   }, [])
 
   const leaveContext = useCallback(() => {
-    setPlayer(null)
+    setParticipant(null)
     if (auth.adminToken()) activateAdmin()
     else activateNone()
   }, [])
 
-  const hasPlayerToken = useCallback((gameId: string) => Boolean(auth.playerToken(gameId)), [])
+  const hasParticipantToken = useCallback((meetingId: string) => Boolean(auth.participantToken(meetingId)), [])
 
   const clearExpiry = useCallback(() => setExpired(null), [])
 
   const value = useMemo(
     () => ({
       isAdmin,
-      player,
+      participant,
       ready,
       expired,
       signInAdmin,
       signOutAdmin,
-      joinedGame,
-      enterGame,
+      joinedMeeting,
+      enterMeeting,
       leaveContext,
-      hasPlayerToken,
+      hasParticipantToken,
       clearExpiry,
     }),
     [
       isAdmin,
-      player,
+      participant,
       ready,
       expired,
       signInAdmin,
       signOutAdmin,
-      joinedGame,
-      enterGame,
+      joinedMeeting,
+      enterMeeting,
       leaveContext,
-      hasPlayerToken,
+      hasParticipantToken,
       clearExpiry,
     ],
   )

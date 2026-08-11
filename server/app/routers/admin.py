@@ -1,4 +1,4 @@
-"""Admin console API: fleet stats, players, suggestions, API keys and the audit trail."""
+"""Admin console API: fleet stats, participants, suggestions, API keys and the audit trail."""
 
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ from ..models import (
     ApiKeyCreated,
     ApiKeyPublic,
     AuditEntry,
-    CardPublic,
-    PlayerPublic,
+    GridPublic,
+    ParticipantPublic,
     SuggestionDecision,
     WordSuggestionPublic,
 )
 from ..realtime import hub
 from ..security import Identity, generate_api_key, require_admin
-from ..serializers import card_public, player_public, suggestion_public
+from ..serializers import grid_public, participant_public, suggestion_public
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -38,14 +38,14 @@ def stats(_admin: Identity = Depends(require_admin)) -> AdminStats:
     """Headline numbers for the admin overview."""
     settings = get_settings()
     return AdminStats(
-        players=_count("SELECT COUNT(*) AS n FROM players"),
+        participants=_count("SELECT COUNT(*) AS n FROM participants"),
         words=_count("SELECT COUNT(*) AS n FROM words"),
         active_words=_count("SELECT COUNT(*) AS n FROM words WHERE active = 1"),
-        games=_count("SELECT COUNT(*) AS n FROM games"),
-        live_games=_count("SELECT COUNT(*) AS n FROM games WHERE status = 'live'"),
-        cards=_count("SELECT COUNT(*) AS n FROM cards"),
+        meetings=_count("SELECT COUNT(*) AS n FROM meetings"),
+        live_meetings=_count("SELECT COUNT(*) AS n FROM meetings WHERE status = 'live'"),
+        grids=_count("SELECT COUNT(*) AS n FROM grids"),
         tokens=_count("SELECT COUNT(*) AS n FROM transcript_tokens"),
-        bingos=_count("SELECT COUNT(*) AS n FROM bingos"),
+        completions=_count("SELECT COUNT(*) AS n FROM completions"),
         connected_sockets=sum(hub.presence().values()),
         pending_suggestions=_count(
             "SELECT COUNT(*) AS n FROM word_suggestions WHERE status = 'pending'"
@@ -56,34 +56,34 @@ def stats(_admin: Identity = Depends(require_admin)) -> AdminStats:
     )
 
 
-# --------------------------------------------------------------------------- players
+# --------------------------------------------------------------------------- participants
 
 
-@router.get("/players", response_model=list[PlayerPublic])
-def list_players(
-    game_id: str | None = Query(default=None),
+@router.get("/participants", response_model=list[ParticipantPublic])
+def list_participants(
+    meeting_id: str | None = Query(default=None),
     _admin: Identity = Depends(require_admin),
-) -> list[PlayerPublic]:
-    """Everyone who has joined a game, optionally scoped to one game."""
-    where = "WHERE game_id = ?" if game_id else ""
-    params = (game_id,) if game_id else ()
-    rows = query_all(f"SELECT * FROM players {where} ORDER BY created_at DESC", params)
-    return [player_public(row) for row in rows]
+) -> list[ParticipantPublic]:
+    """Everyone who has joined a meeting, optionally scoped to one meeting."""
+    where = "WHERE meeting_id = ?" if meeting_id else ""
+    params = (meeting_id,) if meeting_id else ()
+    rows = query_all(f"SELECT * FROM participants {where} ORDER BY created_at DESC", params)
+    return [participant_public(row) for row in rows]
 
 
-@router.delete("/players/{player_id}", status_code=status.HTTP_204_NO_CONTENT)
-def remove_player(player_id: str, _admin: Identity = Depends(require_admin)) -> None:
-    """Remove a player and their card from a game."""
-    target = query_one("SELECT * FROM players WHERE id = ?", (player_id,))
+@router.delete("/participants/{participant_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_participant(participant_id: str, _admin: Identity = Depends(require_admin)) -> None:
+    """Remove a participant and their grid from a meeting."""
+    target = query_one("SELECT * FROM participants WHERE id = ?", (participant_id,))
     if target is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found.")
-    execute("DELETE FROM players WHERE id = ?", (player_id,))
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Participant not found.")
+    execute("DELETE FROM participants WHERE id = ?", (participant_id,))
     invalidate_all_indexes()
     record_audit(
-        "player.removed",
+        "participant.removed",
         actor_name="admin",
-        entity="player",
-        entity_id=player_id,
+        entity="participant",
+        entity_id=participant_id,
         detail=target["nickname"],
     )
 
@@ -97,7 +97,7 @@ def list_suggestions(
     limit: int = Query(default=100, ge=1, le=500),
     _admin: Identity = Depends(require_admin),
 ) -> list[WordSuggestionPublic]:
-    """Player word submissions and the judge's verdicts."""
+    """Participant word submissions and the judge's verdicts."""
     where = "WHERE status = ?" if status_filter else ""
     params: tuple = (status_filter, limit) if status_filter else (limit,)
     rows = query_all(
@@ -115,7 +115,7 @@ def decide_suggestion(
     """Approve or reject a suggestion by hand — the override for the judge's call.
 
     Approving adds the word to the live pool; rejecting an already-approved suggestion
-    deactivates the word it created rather than deleting it, so cards holding it survive.
+    deactivates the word it created rather than deleting it, so grids holding it survive.
     """
     row = query_one("SELECT * FROM word_suggestions WHERE id = ?", (suggestion_id,))
     if row is None:
@@ -150,7 +150,7 @@ def decide_suggestion(
                     row["difficulty"],
                     json.dumps(aliases),
                     now,
-                    f"player:{row['player_name']}",
+                    f"participant:{row['participant_name']}",
                 ),
             )
         else:
@@ -183,27 +183,27 @@ def decide_suggestion(
     return suggestion_public(updated)
 
 
-# --------------------------------------------------------------------------- cards
+# --------------------------------------------------------------------------- grids
 
 
-@router.get("/cards", response_model=list[CardPublic])
-def all_cards(
-    game_id: str | None = Query(default=None),
+@router.get("/grids", response_model=list[GridPublic])
+def all_grids(
+    meeting_id: str | None = Query(default=None),
     _admin: Identity = Depends(require_admin),
-) -> list[CardPublic]:
-    """Every card across every game, or scoped to one game."""
-    where = "WHERE cd.game_id = ?" if game_id else ""
-    params = (game_id,) if game_id else ()
+) -> list[GridPublic]:
+    """Every grid across every meeting, or scoped to one meeting."""
+    where = "WHERE cd.meeting_id = ?" if meeting_id else ""
+    params = (meeting_id,) if meeting_id else ()
     rows = query_all(
         f"""
-        SELECT cd.id FROM cards cd
-        JOIN players p ON p.id = cd.player_id
+        SELECT cd.id FROM grids cd
+        JOIN participants p ON p.id = cd.participant_id
         {where}
         ORDER BY cd.created_at DESC
         """,
         params,
     )
-    return [card for card in (card_public(row["id"]) for row in rows) if card is not None]
+    return [grid for grid in (grid_public(row["id"]) for row in rows) if grid is not None]
 
 
 # --------------------------------------------------------------------------- api keys
@@ -281,5 +281,5 @@ def audit_trail(
 
 @router.get("/presence")
 def presence(_admin: Identity = Depends(require_admin)) -> dict:
-    """Live WebSocket viewer counts, keyed by game id."""
+    """Live WebSocket viewer counts, keyed by meeting id."""
     return hub.presence()

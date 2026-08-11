@@ -3,7 +3,7 @@
 import { useEffect, type ReactNode } from 'react'
 
 import { useToast } from '../lib/store'
-import type { Accent, GameStatus } from '../lib/types'
+import type { Accent, MeetingStatus } from '../lib/types'
 
 /* ------------------------------------------------------------------ primitives */
 
@@ -61,7 +61,7 @@ export function Stat({
   )
 }
 
-export function StatusBadge({ status }: { status: GameStatus }) {
+export function StatusBadge({ status }: { status: MeetingStatus }) {
   return (
     <span className={`badge badge-${status}`}>
       {status === 'live' && <i className="dot dot-pulse" />}
@@ -181,7 +181,7 @@ export function Modal({
 
 /* ------------------------------------------------------------------ toasts */
 
-const TOAST_ICONS = { info: 'ℹ', success: '✓', error: '⚠', bingo: '★' } as const
+const TOAST_ICONS = { info: 'ℹ', success: '✓', error: '⚠', completion: '★' } as const
 
 export function ToastStack() {
   const { toasts, dismiss } = useToast()

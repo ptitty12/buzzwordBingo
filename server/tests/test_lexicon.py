@@ -3,6 +3,7 @@
 import pytest
 
 from app.lexicon import (
+    MAX_PHRASE_LENGTH,
     exact_key,
     match_keys,
     normalize_text,
@@ -47,9 +48,22 @@ class TestStemSymmetry:
     @pytest.mark.parametrize(
         "word",
         [
-            "synergy", "leverage", "disrupt", "bandwidth", "alignment", "pivot",
-            "scalable", "holistic", "paradigm", "ideate", "roadmap", "blockers",
-            "circle back", "low hanging fruit", "move the needle", "deep dive",
+            "synergy",
+            "leverage",
+            "disrupt",
+            "bandwidth",
+            "alignment",
+            "pivot",
+            "scalable",
+            "holistic",
+            "paradigm",
+            "ideate",
+            "roadmap",
+            "blockers",
+            "circle back",
+            "low hanging fruit",
+            "move the needle",
+            "deep dive",
         ],
     )
     def test_word_matches_itself(self, word):
@@ -172,3 +186,41 @@ class TestMatchKeys:
     def test_acronyms_survive_intact(self):
         assert "kpis" in match_keys("KPIs")
         assert stem("ROI") == "roi"
+
+
+class TestEveryPoolWordCanActuallyBeMarked:
+    """Guards against squares that can never light up.
+
+    "at the end of the day" shipped in the seed pool at six tokens while the scanner
+    only ever assembled five, so that square was permanently dead. Nothing failed —
+    the word simply never matched. The bug surfaced as a 1-in-135 flake in an
+    unrelated ingest test, because it only bit when that word landed on the square
+    the test happened to pick. These assertions make it deterministic.
+    """
+
+    def test_every_seeded_word_is_within_the_scanner_reach(self):
+        from app.lexicon import is_matchable
+        from app.seed import WORD_POOL
+
+        too_long = [text for text, _, _, _ in WORD_POOL if not is_matchable(text)]
+        assert too_long == [], (
+            f"these pool words are longer than MAX_PHRASE_LENGTH={MAX_PHRASE_LENGTH} "
+            f"tokens and could never be marked: {too_long}"
+        )
+
+    def test_every_seeded_alias_is_within_the_scanner_reach(self):
+        from app.lexicon import is_matchable
+        from app.seed import WORD_POOL
+
+        too_long = [
+            alias for _, _, _, aliases in WORD_POOL for alias in aliases if not is_matchable(alias)
+        ]
+        assert too_long == []
+
+    def test_is_matchable_draws_the_line_at_the_scanner_limit(self):
+        from app.lexicon import is_matchable
+
+        assert is_matchable(" ".join(["word"] * MAX_PHRASE_LENGTH))
+        assert not is_matchable(" ".join(["word"] * (MAX_PHRASE_LENGTH + 1)))
+        assert not is_matchable("")
+        assert not is_matchable("!!!")

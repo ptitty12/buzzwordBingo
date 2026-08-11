@@ -8,12 +8,12 @@ import { useSession, useToast } from './lib/store'
 import { Avatar, ErrorNote, Spinner, ToastStack } from './components/ui'
 import { Admin } from './views/Admin'
 import { AdminGate } from './views/AdminGate'
-import { GameRoom } from './views/Game'
+import { MeetingRoom } from './views/Meeting'
 import { Join } from './views/Join'
 import { Landing } from './views/Landing'
 
 export default function App() {
-  const { isAdmin, player, ready, expired, clearExpiry, signOutAdmin } = useSession()
+  const { isAdmin, participant, ready, expired, clearExpiry, signOutAdmin } = useSession()
   const { push } = useToast()
   const [segments, navigate] = useRoute()
 
@@ -34,15 +34,15 @@ export default function App() {
     clearExpiry()
   }, [expired, push, clearExpiry])
 
-  // Tint the whole UI with the current player's accent (admins stay on the default).
+  // Tint the whole UI with the current participant's accent (admins stay on the default).
   useEffect(() => {
-    document.documentElement.dataset.accent = player?.accent ?? 'green'
-  }, [player?.accent])
+    document.documentElement.dataset.accent = participant?.accent ?? 'green'
+  }, [participant?.accent])
 
   // Keep the API client pointed at the right credential for the current screen.
   useEffect(() => {
     if (section === 'admin') activateAdmin()
-    else if (section !== 'game') {
+    else if (section !== 'meeting') {
       if (isAdmin) activateAdmin()
       else activateNone()
     }
@@ -50,13 +50,13 @@ export default function App() {
 
   if (!ready) {
     return (
-      <div className="login-shell">
+      <div className="gate-shell">
         <Spinner label="Loading…" />
       </div>
     )
   }
 
-  // The admin console and its PIN gate are a self-contained area with no player chrome.
+  // The admin console and its PIN gate are a self-contained area with no participant chrome.
   if (section === 'admin') {
     return (
       <>
@@ -81,8 +81,8 @@ export default function App() {
     )
   }
 
-  if (section === 'game' && param) {
-    return <GameScreen gameId={param} navigate={navigate} />
+  if (section === 'meeting' && param) {
+    return <MeetingScreen meetingId={param} navigate={navigate} />
   }
 
   return (
@@ -94,45 +94,45 @@ export default function App() {
 }
 
 /**
- * A game route resolves to one of three things: the nickname gate (no identity yet),
- * the game room (player), or the game room in spectator mode (admin).
+ * A meeting route resolves to one of three things: the nickname gate (no identity yet),
+ * the meeting room (participant), or the meeting room in spectator mode (admin).
  */
-function GameScreen({ gameId, navigate }: { gameId: string; navigate: (path: string) => void }) {
-  const { isAdmin, player, enterGame, hasPlayerToken, signOutAdmin } = useSession()
+function MeetingScreen({ meetingId, navigate }: { meetingId: string; navigate: (path: string) => void }) {
+  const { isAdmin, participant, enterMeeting, hasParticipantToken, signOutAdmin } = useSession()
   const [entered, setEntered] = useState(false)
-  const game = useAsync(() => api.game(gameId), [gameId])
+  const meeting = useAsync(() => api.meeting(meetingId), [meetingId])
 
   useEffect(() => {
     setEntered(false)
-    enterGame(gameId).then(() => setEntered(true))
-  }, [gameId, enterGame])
+    enterMeeting(meetingId).then(() => setEntered(true))
+  }, [meetingId, enterMeeting])
 
-  if (game.loading || !entered) {
+  if (meeting.loading || !entered) {
     return (
-      <div className="login-shell">
+      <div className="gate-shell">
         <Spinner label="Opening the room…" />
       </div>
     )
   }
 
-  if (game.error || !game.data) {
+  if (meeting.error || !meeting.data) {
     return (
       <div className="page page-narrow">
-        <ErrorNote message={game.error ?? 'Game not found.'} />
+        <ErrorNote message={meeting.error ?? 'Meeting not found.'} />
         <button className="btn" style={{ marginTop: 14 }} onClick={() => navigate('')}>
-          ← All games
+          ← All meetings
         </button>
       </div>
     )
   }
 
-  const needsNickname = !isAdmin && !hasPlayerToken(gameId)
+  const needsNickname = !isAdmin && !hasParticipantToken(meetingId)
   if (needsNickname) {
     return (
       <>
         <Join
-          game={game.data}
-          onJoined={() => enterGame(gameId).then(() => setEntered(true))}
+          meeting={meeting.data}
+          onJoined={() => enterMeeting(meetingId).then(() => setEntered(true))}
           onBack={() => navigate('')}
         />
         <ToastStack />
@@ -144,15 +144,15 @@ function GameScreen({ gameId, navigate }: { gameId: string; navigate: (path: str
     <>
       <AppBar
         isAdmin={isAdmin}
-        nickname={player?.nickname ?? 'admin'}
-        avatar={player?.avatar}
-        accent={player?.accent}
-        section="game"
+        nickname={participant?.nickname ?? 'admin'}
+        avatar={participant?.avatar}
+        accent={participant?.accent}
+        section="meeting"
         navigate={navigate}
         onSignOut={isAdmin ? signOutAdmin : undefined}
       />
       <main>
-        <GameRoom gameId={gameId} navigate={navigate} />
+        <MeetingRoom meetingId={meetingId} navigate={navigate} />
       </main>
       <ToastStack />
     </>
@@ -184,15 +184,15 @@ function AppBar({
         onClick={() => navigate('')}
       >
         <span className="brand-mark" aria-hidden="true"><i /><i /><i /><i /></span>
-        <span className="hide-sm">Buzzword Bingo</span>
+        <span className="hide-sm">Jargon Watch</span>
       </button>
 
       <nav className="nav grow">
-        <a href="#/" className={section === 'game' ? '' : 'active'}>Games</a>
+        <a href="#/" className={section === 'meeting' ? '' : 'active'}>Meetings</a>
         {isAdmin && (
           <a href="#/admin" className={section === 'admin' ? 'active' : ''}>Admin</a>
         )}
-        {/* The API reference is an operator surface — never advertised to players. */}
+        {/* The API reference is an operator surface — never advertised to participants. */}
         {isAdmin && (
           <a href="/api/docs" target="_blank" rel="noreferrer" className="hide-sm">
             API
